@@ -1,0 +1,12 @@
+{
+  "name": "stackwarden-simple",
+  "version": "0.1.0",
+  "description": "Find what this repo runs on and read your Vercel account into Stackwarden through the Vercel CLI you're signed in to: one browser approval, no keys to paste, and a panel in Claude Code.",
+  "author": {
+    "name": "Stackwarden"
+  },
+  "license": "Apache-2.0",
+  "network": {
+    "hosts": ["stackwarden.vercel.app", "localhost", "vercel.com", "api.vercel.com"]
+  }
+}

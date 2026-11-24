@@ -1,0 +1,12 @@
+{
+  "name": "stackwarden-simple",
+  "description": "The simple Stackwarden plugin for Claude Code: see what a repo runs on, and read Vercel through your own CLI.",
+  "owner": { "name": "Stackwarden" },
+  "plugins": [
+    {
+      "name": "stackwarden-simple",
+      "source": "./plugin-simple",
+      "description": "Find what this repo runs on and read your Vercel account into Stackwarden through the Vercel CLI, with a panel beside the chat."
+    }
+  ]
+}

@@ -1,0 +1,10 @@
+{
+  "name": "stackwarden-reader-vercel-cli",
+  "version": "0.0.0",
+  "private": true,
+  "description": "The Vercel CLI the session reader installs, at the version Stackwarden reads and records with (ADR 0072).",
+  "license": "UNLICENSED",
+  "dependencies": {
+    "vercel": "65.12.1"
+  }
+}

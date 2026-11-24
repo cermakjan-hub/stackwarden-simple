@@ -1,0 +1,17 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/sw.mjs\" hook",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  },
+  "modules": ["./panel.tsx"]
+}
