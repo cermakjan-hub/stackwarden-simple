@@ -563,6 +563,7 @@ export const register: Register = (on) => {
       </Box>
     );
 
+    // Every view ends in the plugin's version, so the person sees which one runs, as after an update.
     const frame = (body: RenderChildren) => (
       <Box flexDirection="column" gap={1} paddingX={1} paddingY="xs">
         {build ? (
@@ -571,6 +572,11 @@ export const register: Register = (on) => {
           </Text>
         ) : null}
         {body}
+        {ownVersion ? (
+          <Text size="caption" dimColor>
+            Stackwarden plugin {ownVersion}
+          </Text>
+        ) : null}
       </Box>
     );
 

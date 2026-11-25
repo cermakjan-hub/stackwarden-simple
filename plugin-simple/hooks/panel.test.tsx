@@ -467,6 +467,8 @@ test('tells nothing, and offers nothing, on the newest version with auto-update 
   await started($);
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' });
   expect(await ui.find({ type: 'Text', text: /is out$/ })).toBeUndefined();
+  // Every view says which version runs.
+  expect(await ui.find({ type: 'Text', text: `Stackwarden plugin ${OWN_VERSION}` })).toBeDefined();
   await ui.press({ key: 'nav-home' });
   expect(await ui.find({ type: 'Button', key: 'auto-update-on' })).toBeUndefined();
   await ui.unmount();
