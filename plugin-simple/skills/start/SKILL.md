@@ -1,6 +1,6 @@
 ---
 name: start
-description: Sets this repo up in Stackwarden and reads the person's Vercel account through the Vercel CLI they are signed in to on this computer, with one approval in the browser and no key to paste. Also reads Vercel again, signs the Vercel CLI in, or connects this computer, when asked. Use when the user wants to start using Stackwarden, add this repo or project to Stackwarden, connect Vercel to Stackwarden, or update Stackwarden from Vercel now.
+description: Sets this repo up in Stackwarden and reads the person's Vercel account through the Vercel CLI they are signed in to on this computer, with one approval in the browser and no key to paste. Also reads Vercel again, signs the Vercel CLI in, connects this computer, or updates the plugin itself and turns on its auto-update, when asked. Use when the user wants to start using Stackwarden, add this repo or project to Stackwarden, connect Vercel to Stackwarden, or update Stackwarden from Vercel now.
 when_to_use: 'For example "I want to use Stackwarden", "set up Stackwarden here", "add this repo to Stackwarden", "connect my Vercel to Stackwarden", "sign in to Vercel" or "update Stackwarden".'
 allowed-tools: Bash(node "${CLAUDE_PLUGIN_ROOT}/scripts/sw.mjs" --data "${CLAUDE_PLUGIN_DATA}" *)
 ---
@@ -29,6 +29,7 @@ Never run `vercel` or another provider's CLI yourself, never open or print the f
 4. When `next` is `confirm_send`: list the services from step 1 and ask `confirm` from step 1's output, as one question. On no, stop: nothing is sent. On yes, run `send .` and say `say`.
 5. When `next` is `pick`: ask `question`, listing each name in `pick` and "None of these". Run `link <externalId> .` with the one picked, or `link none .`, and say `say`.
 6. When `next` is `keys`: run `keys suggest .`. When it says `confirm_keys`, say `say`, then ask `question` as one question that lists every name in `tokens`, with those in `suggested` already chosen, and "None of them". Then, for each ID in `projects`, run `keys <project id> <token id> <token id>` with the IDs of the tokens chosen, or `keys <project id>` alone for none, and say `say`. The IDs come from `tokens`; never type one yourself.
-7. When `next` is `done`: say in one line that Stackwarden reads Vercel by itself when Claude Code starts, at most once a day, and that the Stackwarden panel beside the chat shows this repo's Vercel project and its keys (`/stackwarden` opens it).
+7. When `next` is `done`: say in one line that Stackwarden reads Vercel by itself when Claude Code starts, at most every 15 minutes, and that the Stackwarden panel beside the chat shows the organization, opening on this repo's project (`/stackwarden` opens it). Then run `autoupdate`.
+8. When `autoupdate` says `offer_auto_update`: ask once, as one question, whether to turn on auto-update so new versions of Stackwarden arrive by themselves. On yes, run `autoupdate on` and say `say`. On no, or for any other `next`, say nothing more about it.
 
-When `next` is `stop`, say `say` and stop. When the person only asks to read Vercel again, run `status .` and go on from step 2; to sign the CLI in, run `login` and step 2's `login` line; to change which tokens this app uses, run step 6.
+When `next` is `stop`, say `say` and stop. When the person only asks to read Vercel again, run `status .` and go on from step 2; to sign the CLI in, run `login` and step 2's `login` line; to change which tokens this app uses, run step 6. When they ask to update Stackwarden, run `update` and say `say`.

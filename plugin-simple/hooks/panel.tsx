@@ -14,6 +14,8 @@ const PANE = 'stackwarden';
 const COMMAND = 'stackwarden';
 const VIEW_EVERY_MS = 10 * 60_000;
 const FIELDS_KEY = 'fields-v3';
+/** Kept once the person says "Not now" to auto-update, so Home stops offering it. */
+const AUTO_UPDATE_DECLINED = 'auto-update-declined';
 const LONG_MS = 10 * 60_000;
 const SHORT_MS = 30_000;
 const DAY_MS = 24 * 60 * 60_000;
@@ -98,6 +100,8 @@ interface View {
   fields: Record<CardType, { id: string; label: string }[]>;
   defaults: Record<CardType, string[]>;
   links: { home: string; services: string };
+  /** The newest plugin people can get (ADR 0079); absent or null from a Stackwarden that doesn't say. */
+  plugin?: { latest: string } | null;
 }
 interface Token {
   id: string;
@@ -110,6 +114,8 @@ interface PanelData {
   repo: { name: string; remote: string | null; filed: { project: { name: string; url: string } } | null };
   team: { account: { id: string }; tokens: Token[] | null; projects: { id: string; keys: string[] }[] } | null;
   view: View | null;
+  /** Whether new versions arrive by themselves; null where the plugin isn't from its marketplace. */
+  plugin?: { autoUpdate: boolean | null };
 }
 interface Answer {
   say: string;
@@ -133,13 +139,18 @@ const ACTION_LABELS: Record<Action, string> = {
   set_up: 'Set up the Vercel CLI',
 };
 
-const BUSY: Record<Action | 'keys' | 'inbox', string> = {
+/** What the panel asks `sw.mjs` to do besides the status's one action. */
+type Errand = 'keys' | 'inbox' | 'autoupdate' | 'update';
+
+const BUSY: Record<Action | Errand, string> = {
   refresh: 'Reading Vercel…',
   sign_in: 'Approve the sign-in in your browser, at Vercel…',
   connect: 'Approve this computer in your browser, at Stackwarden…',
   set_up: 'Setting up the Vercel CLI, about two minutes…',
   keys: 'Saving the keys…',
   inbox: 'Answering…',
+  autoupdate: 'Turning on auto-update…',
+  update: 'Updating Stackwarden…',
 };
 
 // A service's detail compares its projects: cost, deploys and keys first, where a provider has them.
@@ -184,6 +195,9 @@ let choosingFields: Picking | null = null;
 let choosingKeys: { project: string; keys: Set<string> } | null = null;
 let chosen: Chosen | null = null;
 let serviceSearch = '';
+/** This plugin's version, from its plugin.json, read at session start. */
+let ownVersion: string | null = null;
+let autoUpdateDeclined = false;
 
 const isObject = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null;
 
@@ -250,7 +264,7 @@ async function untilDone($: EngineInterface, command: string, waiting: string): 
   return answer;
 }
 
-async function act($: EngineInterface, action: Action | 'keys' | 'inbox', args: string[] = []): Promise<void> {
+async function act($: EngineInterface, action: Action | Errand, args: string[] = []): Promise<void> {
   if (busy) return;
   busy = BUSY[action];
   note = null;
@@ -259,8 +273,8 @@ async function act($: EngineInterface, action: Action | 'keys' | 'inbox', args: 
     const answer =
       action === 'refresh'
         ? asAnswer(await sw($, ['read', await $.session.cwd()], LONG_MS))
-        : action === 'keys' || action === 'inbox'
-          ? asAnswer(await sw($, [action, ...args], SHORT_MS))
+        : action === 'keys' || action === 'inbox' || action === 'autoupdate' || action === 'update'
+          ? asAnswer(await sw($, [action, ...args], action === 'update' ? LONG_MS : SHORT_MS))
           : action === 'sign_in'
             ? await untilDone($, 'login', 'login_wait')
             : action === 'connect'
@@ -345,6 +359,27 @@ function expiry(token: Token): string {
 
 const plural = (count: number, one: string, many = `${one}s`) => `${count} ${count === 1 ? one : many}`;
 
+/** Whether version `a` is above `b`, number by number; false when either isn't plain numbers. */
+function isNewer(a: string, b: string): boolean {
+  const parts = (version: string) => (/^\d+\.\d+\.\d+$/.test(version) ? version.split('.').map(Number) : null);
+  const [x, y] = [parts(a), parts(b)];
+  if (!x || !y) return false;
+  for (let index = 0; index < 3; index += 1) {
+    if ((x[index] ?? 0) !== (y[index] ?? 0)) return (x[index] ?? 0) > (y[index] ?? 0);
+  }
+  return false;
+}
+
+/** This plugin's version, from its own plugin.json. */
+async function readOwnVersion($: EngineInterface): Promise<string | null> {
+  try {
+    const manifest = JSON.parse(await $.fs.read(`${$.plugin.root}/.claude-plugin/plugin.json`)) as unknown;
+    return isObject(manifest) && typeof manifest.version === 'string' ? manifest.version : null;
+  } catch {
+    return null;
+  }
+}
+
 /** Whether a service answers what the person typed: by its name, or a project or an account it is in. */
 function matchesSearch(provider: ViewProvider, search: string): boolean {
   const typed = search.trim().toLowerCase();
@@ -400,6 +435,8 @@ export const register: Register = (on) => {
     if (isObject(kept) && isObject(kept.project) && isObject(kept.detail)) {
       chosen = kept as unknown as Chosen;
     }
+    autoUpdateDeclined = (await $.store.get(AUTO_UPDATE_DECLINED)) === true;
+    ownVersion = await readOwnVersion($);
     await $.command.register({ name: COMMAND, description: 'Open the Stackwarden panel' });
     void $.ui.open({ id: PANE, title: 'Stackwarden' });
     void reload($).then(() => refreshView($));
@@ -567,7 +604,7 @@ export const register: Register = (on) => {
       ) : null;
 
     // The top bar of every view: Dashboard and Back on the left, when it was read and Refresh on the right.
-    const bar = (
+    const navigation = (
       <Box flexDirection="row" alignItems="center" justifyContent="space-between" gap={1} flexWrap="wrap">
         <Box flexDirection="row" gap={1}>
           {textButton('nav-home', '⌂ Dashboard', () => go($, { kind: 'home' }))}
@@ -577,6 +614,78 @@ export const register: Register = (on) => {
           {view ? meta(`${view.organization.name} · ${ago(view.at)}`) : null}
           {busy ? null : textButton('refresh', '↻ Refresh', () => act($, 'refresh'))}
         </Box>
+      </Box>
+    );
+
+    // A newer plugin people can get, as Stackwarden names it (ADR 0079). Auto-update is null where the
+    // plugin isn't its marketplace's copy, such as a local build, which updates through its checkout:
+    // then there is neither a notice nor an offer.
+    const autoUpdate = panel.plugin?.autoUpdate ?? null;
+    const latest = view?.plugin?.latest ?? null;
+    const newer =
+      autoUpdate !== null && latest !== null && ownVersion !== null && isNewer(latest, ownVersion) ? latest : null;
+    const turnOnAutoUpdate = () =>
+      textButton('auto-update-on', 'Turn on auto-update', () => act($, 'autoupdate', ['on']));
+    const updateNotice = newer ? (
+      <Box
+        flexDirection="row"
+        alignItems="center"
+        justifyContent="space-between"
+        gap={1}
+        flexWrap="wrap"
+        borderStyle="round"
+        borderColor="suggestion"
+        paddingX={1}
+        paddingY="xs"
+      >
+        <Box flexDirection="column" flexShrink={1}>
+          <Text weight="semibold">Stackwarden {newer} is out</Text>
+          {meta(
+            `You have ${ownVersion ?? 'an older one'}.${autoUpdate === false ? ' With auto-update on, new versions arrive by themselves.' : ''}`,
+          )}
+        </Box>
+        {busy ? null : (
+          <Box flexDirection="row" gap={1} alignItems="center">
+            {textButton('plugin-update', 'Update now', () => act($, 'update'), true)}
+            {autoUpdate === false ? turnOnAutoUpdate() : null}
+          </Box>
+        )}
+      </Box>
+    ) : null;
+    // Home offers auto-update once, while new versions don't arrive by themselves; "Not now" is kept.
+    const autoUpdateOffer =
+      !newer && autoUpdate === false && !autoUpdateDeclined ? (
+        <Box
+          flexDirection="row"
+          alignItems="center"
+          justifyContent="space-between"
+          gap={1}
+          flexWrap="wrap"
+          borderStyle="round"
+          borderColor="subtle"
+          paddingX={1}
+          paddingY="xs"
+        >
+          <Box flexShrink={1}>{meta('New versions of Stackwarden arrive by themselves only with auto-update on.')}</Box>
+          {busy ? null : (
+            <Box flexDirection="row" gap={1} alignItems="center">
+              {turnOnAutoUpdate()}
+              {textButton('auto-update-later', 'Not now', () =>
+                redraw($, () => {
+                  autoUpdateDeclined = true;
+                  void $.store.set(AUTO_UPDATE_DECLINED, true);
+                }),
+              )}
+            </Box>
+          )}
+        </Box>
+      ) : null;
+
+    // The top of every view: the navigation, then a newer version when there is one.
+    const bar = (
+      <Box flexDirection="column" gap="lg">
+        {navigation}
+        {updateNotice}
       </Box>
     );
 
@@ -991,6 +1100,7 @@ export const register: Register = (on) => {
               `${plural(view.projects.length, 'project')} · ${plural(view.providers.length, 'service')}${waiting > 0 ? ` · ${waiting} waiting for your OK` : ''}`,
             )}
           </Box>
+          {autoUpdateOffer}
           <Box flexDirection="column" gap="sm">
             {section('Projects')}
             {view.projects.length === 0 ? meta('No projects yet.') : null}

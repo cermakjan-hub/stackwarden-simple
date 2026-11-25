@@ -14,6 +14,10 @@ In Claude Code 2.1.330 or newer, in a terminal session:
 
 In the desktop app: click + next to the prompt box, then Plugins, Add marketplace with `cermakjan-hub/stackwarden-simple`, then Add plugin.
 
+## Updates
+
+Claude Code leaves auto-update off for this marketplace. The Stackwarden panel offers to turn it on with one click: it sets `autoUpdate` on this marketplace in your `~/.claude/settings.json` and changes nothing else. You can do the same in `/plugin`, Marketplaces, stackwarden-simple. Without it, the panel says when a new version is out and updates it with "Update now".
+
 ## This repo
 
 Each version is published here from Stackwarden's private repository, so a change made here directly is overwritten by the next one. Report problems as issues here.

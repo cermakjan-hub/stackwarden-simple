@@ -11,19 +11,27 @@ Say "I want to use Stackwarden" in a repo. Claude Code then:
 5. asks you once, then files the repo as a project with the services it found;
 6. proposes which of the team's tokens this app uses, for you to confirm; Stackwarden keeps them with the app's Vercel project.
 
-A panel beside the chat shows this repo and its Vercel card. The card has a General section for the team: its plan, cost, projects, and the tokens no project uses. It also has a Project section for this repo's Vercel project: its deploy, its keys, its production URL, and its last 30 days. You choose the fields. The team's other projects are a click away, and you can choose any project's keys there. `/stackwarden` opens the panel where it doesn't open by itself.
+A panel beside the chat shows your Stackwarden organization, as the dashboard does.
+- It opens on this repo's project, with its tasks and its service cards. You choose the fields.
+- Home lists every project and every service, with a search over the services, and the tasks.
+- A service opens its detail, with every project that uses it.
+- A service waiting for your OK is approved or rejected in its project.
+- `/stackwarden` opens the panel where it doesn't open by itself.
 
 ## What it runs
 
 - `scripts/sw.mjs`, built from `packages/reader`, and `scripts/scan.mjs`, the scanner, built from `packages/scanner`.
 - The Vercel CLI, with only the read commands its connector lists (`vercel api` GETs, `vercel tokens list`, `vercel usage`), and `vercel login` when you are signed out.
-- At session start, a hook that reads Vercel in the background at most once a day.
+- At session start, a hook that reads Vercel in the background once a reading is 15 minutes old.
+- When you press "Update now" in the panel, Claude Code's own `claude plugin update stackwarden-simple@stackwarden-simple`.
+- When you press "Turn on auto-update", or say yes to it, one change to `~/.claude/settings.json`: `autoUpdate` on this plugin's marketplace. Nothing else in the file changes, and it is never printed.
 
 ## What it sends
 
 - **To Stackwarden, from the Vercel CLI:** projects with their status and usage, the plan, costs, and the names and dates of tokens. Never a value, never an env var's value.
 - **To Stackwarden, after your OK:** the repo's name and Git address, the services found, and the names of their settings with the files and lines that use them. Never code or values.
 - **To Stackwarden, when you choose them:** which of the team's tokens a Vercel project uses, by the IDs Vercel lists them under.
+- **To Stackwarden, when you press Approve or Reject:** your answer to a service waiting for your OK.
 - **Nothing anywhere else.** The CLI talks to Vercel as it always does.
 
 ## Install

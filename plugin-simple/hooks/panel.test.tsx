@@ -7,6 +7,7 @@ const NOW = new Date().toISOString();
 const WEB = '11111111-1111-4111-8111-111111111111';
 const SHOP = '22222222-2222-4222-8222-222222222222';
 const RESEND = '44444444-4444-4444-8444-444444444444';
+const OWN_VERSION = '0.4.0';
 
 const card = (serviceId: string, provider: string, title: string, rows: unknown[], vercel: unknown = null) => ({
   serviceId,
@@ -198,12 +199,17 @@ const PANE = {
 } as const;
 
 /** The engine beneath the panel: each call it makes answered, and every script run recorded. */
-function engine(on: Parameters<TestBody>[1], runs: string[][], panel: object = PANEL) {
+function engine(on: Parameters<TestBody>[1], runs: string[][], panel: object = PANEL, stored: unknown[][] = []) {
   on('command.register', () => ({ value: { command: 'stackwarden' } }));
   on('ui.open', () => ({ value: { isPlaced: true } }));
   on('ui.status', () => ({ value: undefined }));
   on('store.get', () => ({ value: undefined }));
-  on('store.set', () => ({ value: undefined }));
+  on('store.set', (_, e) => {
+    stored.push([e.key, e.value]);
+    return { value: undefined };
+  });
+  // The plugin's own manifest, which says its version.
+  on('fs.read', () => ({ value: JSON.stringify({ name: 'stackwarden-simple', version: OWN_VERSION }) }));
   on('clock.every', () => ({ value: undefined }));
   on('process.hookEnv', () => ({ value: {} }));
   on('session.cwd', () => ({ value: '/code/web/.claude/worktrees/x' }));
@@ -428,5 +434,67 @@ test('says it is a local build, and that a local build connects on its own', asy
   expect((await ui.find({ type: 'Text', text: /^Local build · / }))?.text).toMatch(/^Local build · \S+/);
   expect(await ui.find({ type: 'Text', text: /keeps a connection of its own/ })).toBeDefined();
   expect(await ui.find({ type: 'Button', key: 'action', text: 'Connect this computer' })).toBeDefined();
+  await ui.unmount();
+});
+
+/** The panel as the marketplace's copy sees it: Stackwarden names `latest`, and auto-update is as given. */
+const fromMarketplace = (latest: string, autoUpdate: boolean | null) => ({
+  ...PANEL,
+  view: { ...VIEW, plugin: { latest } },
+  plugin: { autoUpdate },
+});
+
+test('tells of a newer version, updates through the script, and offers auto-update with it', async ($, on) => {
+  const runs: string[][] = [];
+  engine(on, runs, fromMarketplace('0.5.0', false));
+  await started($);
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' });
+  expect(await ui.find({ type: 'Text', text: 'Stackwarden 0.5.0 is out' })).toBeDefined();
+  expect(await ui.find({ type: 'Text', text: /^You have 0\.4\.0\. With auto-update on/ })).toBeDefined();
+  expect((await ui.find({ type: 'Button', key: 'plugin-update' }))?.props.variant).toBe('primary');
+  await ui.press({ key: 'plugin-update' });
+  expect(runs.some((argv) => argv[2] === 'update')).toBe(true);
+  await ui.press({ key: 'auto-update-on' });
+  expect(runs.find((argv) => argv[2] === 'autoupdate')?.slice(2)).toEqual(['autoupdate', 'on']);
+  // On every view, under the navigation: Home too.
+  await ui.press({ key: 'nav-home' });
+  expect(await ui.find({ type: 'Text', text: 'Stackwarden 0.5.0 is out' })).toBeDefined();
+  await ui.unmount();
+});
+
+test('tells nothing, and offers nothing, on the newest version with auto-update on', async ($, on) => {
+  engine(on, [], fromMarketplace(OWN_VERSION, true));
+  await started($);
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' });
+  expect(await ui.find({ type: 'Text', text: /is out$/ })).toBeUndefined();
+  await ui.press({ key: 'nav-home' });
+  expect(await ui.find({ type: 'Button', key: 'auto-update-on' })).toBeUndefined();
+  await ui.unmount();
+});
+
+test("says nothing of updates where the plugin isn't its marketplace's copy", async ($, on) => {
+  engine(on, [], fromMarketplace('0.5.0', null));
+  await started($);
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' });
+  expect(await ui.find({ type: 'Text', text: /is out$/ })).toBeUndefined();
+  await ui.press({ key: 'nav-home' });
+  expect(await ui.find({ type: 'Button', key: 'auto-update-on' })).toBeUndefined();
+  await ui.unmount();
+});
+
+test('offers auto-update on Home once, and keeps "Not now"', async ($, on) => {
+  const runs: string[][] = [];
+  const stored: unknown[][] = [];
+  engine(on, runs, fromMarketplace(OWN_VERSION, false), stored);
+  await started($);
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' });
+  // Not on a project's page: Home is where it is offered.
+  expect(await ui.find({ type: 'Button', key: 'auto-update-on' })).toBeUndefined();
+  await ui.press({ key: 'nav-home' });
+  expect(await ui.find({ type: 'Text', text: /arrive by themselves only with auto-update on/ })).toBeDefined();
+  await ui.press({ key: 'auto-update-later' });
+  expect(await ui.find({ type: 'Button', key: 'auto-update-on' })).toBeUndefined();
+  expect(stored).toContainEqual(['auto-update-declined', true]);
+  expect(runs.some((argv) => argv[2] === 'autoupdate')).toBe(false);
   await ui.unmount();
 });
