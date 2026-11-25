@@ -563,20 +563,22 @@ export const register: Register = (on) => {
       </Box>
     );
 
-    // Every view ends in the plugin's version, so the person sees which one runs, as after an update.
+    // Every view starts with which plugin runs, so the person sees it at a glance, as after an update:
+    // a local build in the warning colour with its checkout, the marketplace's copy dim.
+    const version = ownVersion ? ` · ${ownVersion}` : '';
     const frame = (body: RenderChildren) => (
       <Box flexDirection="column" gap={1} paddingX={1} paddingY="xs">
         {build ? (
           <Text size="caption" color="warning">
             Local build · {build}
+            {version}
           </Text>
-        ) : null}
-        {body}
-        {ownVersion ? (
+        ) : (
           <Text size="caption" dimColor>
-            Stackwarden plugin {ownVersion}
+            Stackwarden plugin{version}
           </Text>
-        ) : null}
+        )}
+        {body}
       </Box>
     );
 

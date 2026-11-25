@@ -431,7 +431,7 @@ test('says it is a local build, and that a local build connects on its own', asy
   engine(on, [], unconnected);
   await started($);
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' });
-  expect((await ui.find({ type: 'Text', text: /^Local build · / }))?.text).toMatch(/^Local build · \S+/);
+  expect((await ui.find({ type: 'Text', text: /^Local build · / }))?.text).toMatch(/^Local build · \S+ · 0\.4\.0$/);
   expect(await ui.find({ type: 'Text', text: /keeps a connection of its own/ })).toBeDefined();
   expect(await ui.find({ type: 'Button', key: 'action', text: 'Connect this computer' })).toBeDefined();
   await ui.unmount();
@@ -467,8 +467,9 @@ test('tells nothing, and offers nothing, on the newest version with auto-update 
   await started($);
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' });
   expect(await ui.find({ type: 'Text', text: /is out$/ })).toBeUndefined();
-  // Every view says which version runs.
-  expect(await ui.find({ type: 'Text', text: `Stackwarden plugin ${OWN_VERSION}` })).toBeDefined();
+  // Every view starts with which version runs; a test runs from the source, as a local build.
+  const [first] = await ui.findAll({ type: 'Text' });
+  expect(first?.text).toMatch(new RegExp(`^Local build · \\S+ · ${OWN_VERSION.replaceAll('.', '\\.')}$`));
   await ui.press({ key: 'nav-home' });
   expect(await ui.find({ type: 'Button', key: 'auto-update-on' })).toBeUndefined();
   await ui.unmount();
