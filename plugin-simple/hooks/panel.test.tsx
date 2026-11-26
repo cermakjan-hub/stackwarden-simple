@@ -199,7 +199,17 @@ const PANE = {
 } as const;
 
 /** The engine beneath the panel: each call it makes answered, and every script run recorded. */
-function engine(on: Parameters<TestBody>[1], runs: string[][], panel: object = PANEL, stored: unknown[][] = []) {
+/**
+ * The engine beneath the panel on a computer whose Node.js is `node` (its `--version`, or null for
+ * none): the plugin's scripts answer only on Node.js 22 or newer.
+ */
+function engine(
+  on: Parameters<TestBody>[1],
+  runs: string[][],
+  panel: object = PANEL,
+  stored: unknown[][] = [],
+  node: string | null = 'v24.1.0',
+) {
   on('command.register', () => ({ value: { command: 'stackwarden' } }));
   on('ui.open', () => ({ value: { isPlaced: true } }));
   on('ui.status', () => ({ value: undefined }));
@@ -216,9 +226,13 @@ function engine(on: Parameters<TestBody>[1], runs: string[][], panel: object = P
   on('session.start', (_, e) => ({ cwd: e.cwd }));
   on('process.run', (_, e) => {
     runs.push([...e.argv]);
+    const answer = (stdout: string, exitCode = 0) => ({
+      value: { exitCode, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false },
+    });
+    if (e.argv[1] === '--version') return node === null ? answer('', 1) : answer(`${node}\n`);
+    if (node === null || Number(/^v(\d+)\./.exec(node)?.[1]) < 22) return answer('', 1);
     const command = e.argv[2];
-    const stdout = command === 'panel' ? JSON.stringify(panel) : JSON.stringify({ say: 'Done.', next: 'done' });
-    return { value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } };
+    return answer(command === 'panel' ? JSON.stringify(panel) : JSON.stringify({ say: 'Done.', next: 'done' }));
   });
 }
 
@@ -499,5 +513,26 @@ test('offers auto-update on Home once, and keeps "Not now"', async ($, on) => {
   expect(await ui.find({ type: 'Button', key: 'auto-update-on' })).toBeUndefined();
   expect(stored).toContainEqual(['auto-update-declined', true]);
   expect(runs.some((argv) => argv[2] === 'autoupdate')).toBe(false);
+  await ui.unmount();
+});
+
+test('says Node.js is missing, with where to get it, instead of reading for ever', async ($, on) => {
+  engine(on, [], PANEL, [], null);
+  await started($);
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' });
+  expect(await ui.find({ type: 'Text', text: 'Stackwarden needs Node.js 22 or newer' })).toBeDefined();
+  expect(await ui.find({ type: 'Text', text: /which this computer doesn't have\. Install Node\.js 22/ })).toBeDefined();
+  expect(await ui.find({ type: 'Link', text: 'Download Node.js ↗' })).toBeDefined();
+  expect(await ui.find({ type: 'Text', text: /reading what this computer knows/ })).toBeUndefined();
+  await ui.unmount();
+});
+
+test('says which Node.js this computer has when it is too old', async ($, on) => {
+  engine(on, [], PANEL, [], 'v20.11.0');
+  await started($);
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' });
+  expect(
+    await ui.find({ type: 'Text', text: /needs Node\.js 22 or newer, and this computer has v20\.11\.0/ }),
+  ).toBeDefined();
   await ui.unmount();
 });

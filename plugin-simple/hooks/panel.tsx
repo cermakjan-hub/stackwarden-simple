@@ -19,6 +19,9 @@ const AUTO_UPDATE_DECLINED = 'auto-update-declined';
 const LONG_MS = 10 * 60_000;
 const SHORT_MS = 30_000;
 const DAY_MS = 24 * 60 * 60_000;
+/** The oldest Node.js the plugin's scripts run on: their bundles' target in scripts/build-plugin.ts. */
+const NODE_MIN = 22;
+const NODE_DOWNLOAD = 'https://nodejs.org/en/download';
 /** The task kind for services waiting for an OK: the panel shows those in their project, not on Home. */
 const APPROVALS = 'suggestions-waiting';
 
@@ -198,6 +201,8 @@ let serviceSearch = '';
 /** This plugin's version, from its plugin.json, read at session start. */
 let ownVersion: string | null = null;
 let autoUpdateDeclined = false;
+/** Why the scripts can't run, when the last read got no answer; null when they can. */
+let nodeProblem: string | null = null;
 
 const isObject = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null;
 
@@ -218,11 +223,33 @@ function asAnswer(value: unknown): Answer {
 async function sw($: EngineInterface, args: string[], timeoutMs: number): Promise<unknown> {
   const env = await $.process.hookEnv();
   const cwd = await $.session.cwd();
-  const result = await $.process.run(['node', `${$.plugin.root}/scripts/sw.mjs`, ...args], { env, cwd, timeoutMs });
   try {
+    const result = await $.process.run(['node', `${$.plugin.root}/scripts/sw.mjs`, ...args], { env, cwd, timeoutMs });
     return JSON.parse(result.stdout) as unknown;
   } catch {
+    // No Node.js to run it, or no answer it could read: the panel says which, from nodeCheck.
     return null;
+  }
+}
+
+/**
+ * Why the plugin's scripts can't run here, in the person's words, or null when Node.js is there at
+ * the version they need. The Vercel CLI runs on it too.
+ */
+async function nodeCheck($: EngineInterface): Promise<string | null> {
+  const install = `Install Node.js ${NODE_MIN} or newer, then restart Claude Code.`;
+  try {
+    const env = await $.process.hookEnv();
+    const result = await $.process.run(['node', '--version'], { env, timeoutMs: SHORT_MS });
+    const version = result.stdout.trim();
+    const major = Number(/^v(\d+)\./.exec(version)?.[1] ?? Number.NaN);
+    if (result.exitCode !== 0 || Number.isNaN(major))
+      return `Stackwarden runs on Node.js, which this computer doesn't have. ${install}`;
+    return major < NODE_MIN
+      ? `Stackwarden needs Node.js ${NODE_MIN} or newer, and this computer has ${version}. ${install}`
+      : null;
+  } catch {
+    return `Stackwarden runs on Node.js, which this computer doesn't have. ${install}`;
   }
 }
 
@@ -239,6 +266,8 @@ function repoProject(panel: PanelData): ViewProject | null {
 
 async function reload($: EngineInterface): Promise<void> {
   data = asPanel(await sw($, ['panel', await $.session.cwd()], SHORT_MS));
+  // No answer: say whether Node.js is the reason, rather than read on for ever.
+  nodeProblem = data ? null : await nodeCheck($);
   // The first view decides where the panel opens: the repo's project, else Home.
   if (data?.view && place === null) {
     const mine = repoProject(data);
@@ -582,7 +611,22 @@ export const register: Register = (on) => {
       </Box>
     );
 
-    if (!data) return frame(meta('Stackwarden: reading what this computer knows…'));
+    if (!data) {
+      // Without Node.js the scripts never answer: say so, with where to get it, once the check is in.
+      return frame(
+        nodeProblem ? (
+          <Box flexDirection="column" gap="xs" borderStyle="round" borderColor="warning" paddingX={1} paddingY="xs">
+            <Text color="warning" weight="semibold">
+              Stackwarden needs Node.js {NODE_MIN} or newer
+            </Text>
+            {meta(nodeProblem)}
+            <Link href={NODE_DOWNLOAD} label="Download Node.js ↗" />
+          </Box>
+        ) : (
+          meta('Stackwarden: reading what this computer knows…')
+        ),
+      );
+    }
     const panel = data;
     const view = panel.view;
 
