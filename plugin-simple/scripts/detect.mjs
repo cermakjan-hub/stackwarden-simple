@@ -7,7 +7,7 @@
 import { CATALOG, scanRepo } from './scan.mjs';
 import { looksSecret } from './stackwarden.mjs';
 
-export const SCANNER_VERSION = 'simple-0.5.2';
+export const SCANNER_VERSION = 'simple-0.5.3';
 const MAX_EVIDENCE = 50;
 const MAX_USES = 50;
 const pypi = (/** @type {string} */ name) => name.toLowerCase().replace(/[-_.]+/g, '-');

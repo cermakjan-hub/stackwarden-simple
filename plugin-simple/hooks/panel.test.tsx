@@ -619,6 +619,12 @@ const fromMarketplace = (latest: string, autoUpdate: boolean | null) => ({
 test('tells of a newer version among the tasks, updates through the script, and offers auto-update', async ($, on) => {
   const runs: string[][] = [];
   engine(on, runs, fromMarketplace('0.5.0', false));
+  const filled: string[] = [];
+  on('prompt.read', () => ({ value: { text: '', cursor: 0 } }));
+  on('prompt.fill', (_, e) => {
+    filled.push(e.text);
+    return { isFilled: true };
+  });
   await started($);
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' });
   // A task, so on Home, first among the tasks; not on a project's page.
@@ -638,10 +644,16 @@ test('tells of a newer version among the tasks, updates through the script, and 
   expect(
     await ui.find({
       type: 'Text',
-      text: 'When you can · To use it, type /reload-plugins in the chat, or start a new session.',
+      text: 'When you can · To use it, reload the plugins or start a new session.',
     }),
   ).toBeDefined();
   expect(await ui.find({ type: 'Button', key: 'plugin-update' })).toBeUndefined();
+  // Said once, in the task: the script's own answer isn't drawn under it again.
+  expect(await ui.find({ type: 'Text', text: 'Stackwarden is updated.' })).toBeUndefined();
+  // One press puts /reload-plugins in the chat; the person sends it.
+  await ui.press({ key: 'reload-plugins' });
+  expect(filled).toEqual(['/reload-plugins']);
+  expect(await ui.find({ type: 'Text', text: '/reload-plugins is in the chat: press Enter.' })).toBeDefined();
   await ui.unmount();
 });
 

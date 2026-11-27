@@ -15,7 +15,7 @@ A panel beside the chat shows your Stackwarden organization, as the dashboard do
 
 ## What it does on your computer
 
-This section is for you and for your Claude Code session, which can check every line against the code. The plugin is plain, readable source with no build step, no bundled packages and nothing minified: what you read in `scripts/`, `hooks/panel.tsx` and the skill is what runs, about 190 KB, roughly 50k tokens.
+This section is for you and for your Claude Code session, which can check every line against the code. The plugin is plain, readable source with no build step, no bundled packages and nothing minified: what you read in `scripts/`, `hooks/panel.tsx` and the skill is what runs, about 200 KB, roughly 50k tokens.
 
 Everything runs in your own Claude Code session, on your computer. The plugin reads your repo, and your Vercel account through the Vercel CLI you installed and signed in to yourself. Nothing about your repo or your Vercel account goes to Stackwarden before you say yes in the chat. Connecting this computer, which comes first, sends its name.
 
@@ -26,7 +26,7 @@ Everything runs in your own Claude Code session, on your computer. The plugin re
 - **`vercel login`**, only when you press "Sign in to Vercel" or ask Claude to sign in: Vercel's own sign-in, approved by you in your browser (`scripts/read.mjs`, `signIn`).
 - **Your browser**, opened at Stackwarden's page to connect this computer, and only at the Stackwarden address this computer connects to (`scripts/sw.mjs`, `openBrowser`). "Switch account" in the panel connects it again: the new connection replaces this computer's key, the old one is revoked, and another organization gets nothing before your yes in the chat (`scripts/connect.mjs`, `keep`).
 - **`claude plugin update`**, only when you press "Update now" in the panel (`scripts/sw.mjs`, `update`).
-- **The panel** (`hooks/panel.tsx`), a Claude Code mod, which opens beside the chat in every session. To notice the plugin's own steps, it sees the text of each Bash and PowerShell command the session runs, and keeps none of it.
+- **The panel** (`hooks/panel.tsx`), a Claude Code mod, which opens beside the chat in every session. To notice the plugin's own steps, it sees the text of each Bash and PowerShell command the session runs, and keeps none of it. After an update, pressing its "/reload-plugins" puts that command in the chat's message box for you to send; it reads the box first only so as not to write over a message you typed, and keeps none of it.
 - **It installs nothing.** Without a Vercel CLI, Claude tells you the install command, `npm install --global vercel`, and runs it only on your yes.
 
 ### Background processes

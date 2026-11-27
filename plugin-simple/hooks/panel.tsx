@@ -345,6 +345,21 @@ async function untilDone($: EngineInterface, command: string, waiting: string): 
 }
 
 /**
+ * Puts `/reload-plugins` in the chat's box after an update, for the person to send with Enter: the
+ * panel never sends it. A draft they typed stays; then they're told to send or clear it first.
+ */
+async function offerReload($: EngineInterface): Promise<void> {
+  const draft = (await $.prompt.read()).text;
+  const filled = draft.trim() === '' ? await $.prompt.fill({ text: '/reload-plugins' }) : null;
+  note = filled?.isFilled
+    ? '/reload-plugins is in the chat: press Enter.'
+    : draft.trim() !== ''
+      ? 'The chat has a message in it: send or clear it, then type /reload-plugins.'
+      : 'Type /reload-plugins in the chat, or start a new session.';
+  $.ui.invalidate('ui.render');
+}
+
+/**
  * The Cancel beside a connection the browser waits for: it stops the listener, so the wait ends
  * within seconds and the panel is as it was, ready to connect again, say after signing in to the
  * right account.
@@ -371,8 +386,9 @@ async function act($: EngineInterface, action: Action | Errand, args: string[] =
             : action === 'connect' || action === 'switch'
               ? await untilDone($, 'connect', 'connect_wait')
               : asAnswer(await sw($, ['install'], LONG_MS));
-    note = answer.say;
-    if (action === 'update' && answer.next === 'reload') updated = true;
+    // An installed update says what makes it run in its own task, so its answer isn't said again.
+    updated = updated || (action === 'update' && answer.next === 'reload');
+    note = action === 'update' && answer.next === 'reload' ? null : answer.say;
     if (action === 'connect' || action === 'switch') await sw($, ['view'], SHORT_MS);
   } catch {
     note = 'That did not finish. Try again.';
@@ -819,8 +835,8 @@ export const register: Register = (on) => {
             'plugin-update-task',
             'info',
             `Stackwarden ${newer} is installed`,
-            'To use it, type /reload-plugins in the chat, or start a new session.',
-            null,
+            'To use it, reload the plugins or start a new session.',
+            textButton('reload-plugins', '/reload-plugins', () => offerReload($), true),
           )
         : newer && newer !== dismissedVersion
           ? taskBox(
