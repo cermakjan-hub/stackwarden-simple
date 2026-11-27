@@ -12,7 +12,7 @@ import { createServer } from 'node:http';
 import { hostname } from 'node:os';
 import { join } from 'node:path';
 
-import { config, readJson, rmQuietly, saveConfig, writeJson } from './local.mjs';
+import { config, readJson, rmQuietly, saveConfig, updatePanelFile, writeJson } from './local.mjs';
 import { pairingStatus, redeemGrant, revokeKey, sha256, startPairing } from './stackwarden.mjs';
 
 const PENDING = 'reader-pairing.json';
@@ -125,7 +125,9 @@ export async function listen(folder, base, nonce) {
 }
 
 /**
- * Keeps the new key as this computer's only organization, and revokes the keys it replaces.
+ * Keeps the new key as this computer's only organization, and revokes the keys it replaces. Another
+ * organization than before, as after "Switch account", starts as a first connection: the yes to send,
+ * what was filed and what the panel showed were the last one's, so the person is asked again.
  * @param {string} folder @param {string} base @param {{ id: string, name: string | null, key: string }} organization
  */
 async function keep(folder, base, organization) {
@@ -137,6 +139,10 @@ async function keep(folder, base, organization) {
     organizations: [{ ...organization, pairedAt: new Date().toISOString() }],
     accounts: sameOrganization ? before.accounts : {},
   });
+  if (before?.organizations[0] && !sameOrganization) {
+    rmQuietly(join(folder, 'reader-state.json'));
+    updatePanelFile(folder, (file) => ({ ...file, view: null, repos: {}, rounds: {} }));
+  }
   for (const old of before?.organizations ?? []) {
     if (old.key !== organization.key) await revokeKey(before?.url ?? base, old.key);
   }

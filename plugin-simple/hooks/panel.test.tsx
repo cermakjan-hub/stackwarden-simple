@@ -255,7 +255,9 @@ function engine(
     if (e.argv[1] === '--version') return node === null ? answer('', 1) : answer(`${node}\n`);
     if (node === null || Number(/^v(\d+)\./.exec(node)?.[1]) < 22) return answer('', 1);
     const command = e.argv[2];
-    return answer(command === 'panel' ? JSON.stringify(panel) : JSON.stringify({ say: 'Done.', next: 'done' }));
+    if (command === 'panel') return answer(JSON.stringify(panel));
+    if (command === 'update') return answer(JSON.stringify({ say: 'Stackwarden is updated.', next: 'reload' }));
+    return answer(JSON.stringify({ say: 'Done.', next: 'done' }));
   });
   return clock;
 }
@@ -600,14 +602,52 @@ test('tells of a newer version, updates through the script, and offers auto-upda
   expect(await ui.find({ type: 'Text', text: 'Stackwarden 0.5.0 is out' })).toBeDefined();
   expect(await ui.find({ type: 'Text', text: /^You have 0\.4\.0\. With auto-update on/ })).toBeDefined();
   expect((await ui.find({ type: 'Button', key: 'plugin-update' }))?.props.variant).toBe('primary');
-  await ui.press({ key: 'plugin-update' });
-  expect(runs.some((argv) => argv[2] === 'update')).toBe(true);
   await ui.press({ key: 'auto-update-on' });
   expect(runs.find((argv) => argv[2] === 'autoupdate')?.slice(2)).toEqual(['autoupdate', 'on']);
   // On every view, under the navigation: Home too.
   await ui.press({ key: 'nav-home' });
   expect(await ui.find({ type: 'Text', text: 'Stackwarden 0.5.0 is out' })).toBeDefined();
+  // The update runs past a press's 10 seconds, so the press only starts it, and the box says what
+  // makes the new version run once it is installed.
+  await ui.press({ key: 'plugin-update' });
+  expect(runs.some((argv) => argv[2] === 'update')).toBe(true);
+  expect(await ui.find({ type: 'Text', text: 'Stackwarden 0.5.0 is installed' })).toBeDefined();
+  expect(
+    await ui.find({ type: 'Text', text: 'To use it, type /reload-plugins in the chat, or start a new session.' }),
+  ).toBeDefined();
+  expect(await ui.find({ type: 'Button', key: 'plugin-update' })).toBeUndefined();
   await ui.unmount();
+});
+
+test('switches this computer to another account from Home, by connecting it again', async ($, on) => {
+  const runs: string[][] = [];
+  engine(on, runs);
+  await started($);
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' });
+  await ui.press({ key: 'nav-home' });
+  await ui.press({ key: 'switch-account' });
+  expect(runs.filter((argv) => argv[2] === 'connect').map((argv) => argv.slice(2))).toEqual([['connect']]);
+  // Connected again: the panel asks for the organization it now goes to.
+  expect(runs.filter((argv) => argv[2] === 'view').length).toBeGreaterThan(0);
+  await ui.unmount();
+});
+
+test('draws VS Code its own spacing in numbers, and every button but the main one dim', async ($, on) => {
+  engine(on, [], fromMarketplace('0.5.0', false));
+  await started($);
+  for (const surface of ['vscode', 'desktop'] as const) {
+    const ui = await $.ui.mount({ ...PANE, surface });
+    await ui.press({ key: 'nav-home' });
+    const boxes = await ui.findAll({ type: 'Box' });
+    const named = boxes.flatMap((box) => [box.props.gap, box.props.paddingY].filter((v) => typeof v === 'string'));
+    expect(named.length === 0).toBe(surface === 'vscode');
+    expect((await ui.find({ type: 'Button', key: 'refresh' }))?.props.dimColor).toBe(
+      surface === 'vscode' ? true : undefined,
+    );
+    expect((await ui.find({ type: 'Button', key: 'plugin-update' }))?.props.variant).toBe('primary');
+    expect((await ui.find({ type: 'Button', key: 'plugin-update' }))?.props.dimColor).toBeUndefined();
+    await ui.unmount();
+  }
 });
 
 test('tells nothing, and offers nothing, on the newest version with auto-update on', async ($, on) => {

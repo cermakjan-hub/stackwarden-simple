@@ -535,7 +535,10 @@ async function main(data) {
       if (!from || !claude) return answer(elsewhere, 'stop');
       const result = await run(claude, ['plugin', 'update', from.plugin], { cwd: data, clear: [], set: {} });
       return result.exitCode === 0
-        ? answer('Stackwarden is updated. Run /reload-plugins to use the new version now.', 'reload')
+        ? answer(
+            'Stackwarden is updated. To use it, type /reload-plugins in the chat, or start a new session.',
+            'reload',
+          )
         : answer(`The update didn't finish. ${elsewhere}`, 'stop');
     }
     default:

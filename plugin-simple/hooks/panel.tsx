@@ -31,6 +31,10 @@ const NODE_DOWNLOAD = 'https://nodejs.org/en/download';
 const APPROVALS = 'suggestions-waiting';
 
 // What `sw.mjs panel` prints: see scripts/panel-data.mjs and core's ReaderView.
+/** The spacing steps the panel uses, and what each is in VS Code, in lines down and characters across. */
+type Step = 'xs' | 'sm' | 'md' | 'lg' | 'xl';
+const VSCODE_SPACE: Record<Step, number> = { xs: 0.35, sm: 0.5, md: 0.75, lg: 1, xl: 1.5 };
+
 type Tone = 'ok' | 'warn' | 'crit' | 'neutral';
 type CardValue =
   | { type: 'text'; text: string; mono: boolean }
@@ -150,7 +154,7 @@ const ACTION_LABELS: Record<Action, string> = {
 };
 
 /** What the panel asks `sw.mjs` to do besides the status's one action. */
-type Errand = 'keys' | 'inbox' | 'autoupdate' | 'update' | 'link';
+type Errand = 'keys' | 'inbox' | 'autoupdate' | 'update' | 'link' | 'switch';
 
 const BUSY: Record<Action | Errand, string> = {
   refresh: 'Reading Vercel through your Vercel CLI…',
@@ -161,7 +165,9 @@ const BUSY: Record<Action | Errand, string> = {
   keys: 'Saving the keys…',
   inbox: 'Answering…',
   autoupdate: 'Turning on auto-update…',
-  update: 'Updating Stackwarden…',
+  update: 'Updating Stackwarden. It takes up to a minute…',
+  switch:
+    'Stackwarden opened in your browser. Use another account there if you need to, then click Connect. Until then this computer stays where it is.',
 };
 
 // A service's detail compares its projects: cost, deploys and keys first, where a provider has them.
@@ -213,6 +219,8 @@ let autoUpdateDeclined = false;
 let nodeProblem: string | null = null;
 /** When the state files had last changed as the panel last read them. */
 let drawnAt = 0;
+/** "Update now" installed a newer version, which runs once the person reloads or starts a session. */
+let updated = false;
 
 const isObject = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null;
 
@@ -343,11 +351,12 @@ async function act($: EngineInterface, action: Action | Errand, args: string[] =
           ? asAnswer(await sw($, [action, ...args], action === 'update' ? LONG_MS : SHORT_MS))
           : action === 'sign_in'
             ? await untilDone($, 'login', 'login_wait')
-            : action === 'connect'
+            : action === 'connect' || action === 'switch'
               ? await untilDone($, 'connect', 'connect_wait')
               : asAnswer(await sw($, ['install'], LONG_MS));
     note = answer.say;
-    if (action === 'connect') await sw($, ['view'], SHORT_MS);
+    if (action === 'update' && answer.next === 'reload') updated = true;
+    if (action === 'connect' || action === 'switch') await sw($, ['view'], SHORT_MS);
   } catch {
     note = 'That did not finish. Try again.';
   } finally {
@@ -542,6 +551,14 @@ export const register: Register = (on) => {
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const { Box, Text, Button, Link, Input } = $.ui.resolve(e);
     const draws = e.surface === 'desktop' || e.surface === 'mobile';
+    /**
+     * VS Code's panel (extension 2.1.332) takes spacing only as a number of lines or characters, and
+     * drops a step's name, so a box's text sat on its border there. It also fills every Button but a
+     * dim one, whatever `plain` says. Those are the two places the panel draws VS Code its own way.
+     */
+    const vscode = e.surface === 'vscode';
+    const space = (step: Step) => (vscode ? VSCODE_SPACE[step] : step);
+    const quiet = vscode ? { dimColor: true as const } : {};
     // A field's label column, in cells, worked out from the pane's own width.
     const columns = typeof e.props.bodyColumns === 'number' && e.props.bodyColumns > 0 ? e.props.bodyColumns : 60;
     const labelWidth = Math.max(10, Math.round(columns * 0.3));
@@ -575,12 +592,15 @@ export const register: Register = (on) => {
      * of a place is the one filled button. One design for every surface (ADR 0081): each draws a plain
      * button its own way.
      */
-    const textButton = (key: string, label: string, onPress: () => void, main = false) => (
+    const textButton = (key: string, label: string, onPress: () => unknown, main = false) => (
       <Button
         key={key}
         label={label}
-        onPress={onPress}
-        {...(main ? { variant: 'primary' as const } : { plain: true as const })}
+        // A press has 10 seconds; a step can take minutes. The step says what it does while it runs.
+        onPress={() => {
+          void onPress();
+        }}
+        {...(main ? { variant: 'primary' as const } : { plain: true as const, ...quiet })}
       />
     );
 
@@ -598,13 +618,13 @@ export const register: Register = (on) => {
       options: { color?: Color; quiet?: boolean } = {},
     ) => {
       const button = (
-        <Button key={key} plain onPress={onPress} {...(options.quiet ? { dimColor: true } : {})}>
+        <Button key={key} plain onPress={onPress} {...(options.quiet ? { dimColor: true } : quiet)}>
           <Text weight={options.quiet ? 'regular' : 'semibold'}>{name}</Text>
           <Text dimColor> ›</Text>
         </Button>
       );
       return options.color ? (
-        <Box key={`${key}-named`} flexDirection="row" alignItems="center" gap="xs">
+        <Box key={`${key}-named`} flexDirection="row" alignItems="center" gap={space('xs')}>
           <Text color={PROJECT_COLORS[options.color]}>●</Text>
           {button}
         </Box>
@@ -623,7 +643,7 @@ export const register: Register = (on) => {
     // a local build in the warning colour with its checkout, the marketplace's copy dim.
     const version = ownVersion ? ` · ${ownVersion}` : '';
     const frame = (body: RenderChildren) => (
-      <Box flexDirection="column" gap={1} paddingX={1} paddingY="xs">
+      <Box flexDirection="column" gap={1} paddingX={1} paddingY={space('xs')}>
         {build ? (
           <Text size="caption" color="warning">
             Local build · {build}
@@ -642,7 +662,14 @@ export const register: Register = (on) => {
       // Without Node.js the scripts never answer: say so, with where to get it, once the check is in.
       return frame(
         nodeProblem ? (
-          <Box flexDirection="column" gap="xs" borderStyle="round" borderColor="warning" paddingX={1} paddingY="xs">
+          <Box
+            flexDirection="column"
+            gap={space('xs')}
+            borderStyle="round"
+            borderColor="warning"
+            paddingX={1}
+            paddingY={space('xs')}
+          >
             <Text color="warning" weight="semibold">
               Stackwarden needs Node.js {NODE_MIN} or newer
             </Text>
@@ -659,7 +686,14 @@ export const register: Register = (on) => {
 
     const status =
       panel.status.state === 'connected' ? null : (
-        <Box flexDirection="column" gap="xs" borderStyle="round" borderColor="warning" paddingX={1} paddingY="xs">
+        <Box
+          flexDirection="column"
+          gap={space('xs')}
+          borderStyle="round"
+          borderColor="warning"
+          paddingX={1}
+          paddingY={space('xs')}
+        >
           <Text color="warning" weight="semibold">
             {panel.status.text}
           </Text>
@@ -721,7 +755,7 @@ export const register: Register = (on) => {
         borderColor={border}
         borderDimColor={border === 'subtle'}
         paddingX={1}
-        paddingY="xs"
+        paddingY={space('xs')}
       >
         <Box flexDirection="column" flexShrink={1}>
           {left}
@@ -733,27 +767,42 @@ export const register: Register = (on) => {
         ) : null}
       </Box>
     );
-    // Buttons wait while a step runs.
-    const updateNotice = newer
-      ? boxed(
-          'update',
-          'suggestion',
-          [
-            <Text key="out" weight="semibold">
-              Stackwarden {newer} is out
-            </Text>,
-            meta(
-              `You have ${ownVersion ?? 'an older one'}.${autoUpdate === false ? ' With auto-update on, new versions arrive by themselves.' : ''}`,
-            ),
-          ],
-          busy
-            ? null
-            : [
-                textButton('plugin-update', 'Update now', () => act($, 'update'), true),
-                autoUpdate === false ? turnOnAutoUpdate() : null,
-              ],
-        )
-      : null;
+    // Buttons wait while a step runs. The update says what it is doing in its own box, and once it is
+    // installed, what makes it run: Claude Code loads a plugin when a session starts or reloads.
+    const updateNotice = !newer
+      ? null
+      : updated
+        ? boxed(
+            'update',
+            'suggestion',
+            [
+              <Text key="out" weight="semibold">
+                Stackwarden {newer} is installed
+              </Text>,
+              meta('To use it, type /reload-plugins in the chat, or start a new session.'),
+            ],
+            null,
+          )
+        : boxed(
+            'update',
+            'suggestion',
+            [
+              <Text key="out" weight="semibold">
+                Stackwarden {newer} is out
+              </Text>,
+              meta(
+                busy === BUSY.update
+                  ? BUSY.update
+                  : `You have ${ownVersion ?? 'an older one'}.${autoUpdate === false ? ' With auto-update on, new versions arrive by themselves.' : ''}`,
+              ),
+            ],
+            busy
+              ? null
+              : [
+                  textButton('plugin-update', 'Update now', () => act($, 'update'), true),
+                  autoUpdate === false ? turnOnAutoUpdate() : null,
+                ],
+          );
     // Home offers auto-update once, while new versions don't arrive by themselves; "Not now" is kept.
     const autoUpdateOffer =
       !newer && autoUpdate === false && !autoUpdateDeclined
@@ -777,7 +826,7 @@ export const register: Register = (on) => {
 
     // The top of every view: the navigation, then a newer version when there is one.
     const bar = (
-      <Box flexDirection="column" gap="xl">
+      <Box flexDirection="column" gap={space('xl')}>
         {navigation}
         {updateNotice}
       </Box>
@@ -785,7 +834,7 @@ export const register: Register = (on) => {
 
     if (!view) {
       return frame(
-        <Box flexDirection="column" gap="xl">
+        <Box flexDirection="column" gap={space('xl')}>
           {status}
           {notes}
           {panel.status.state === 'not_connected' ? null : meta('Loading Stackwarden…')}
@@ -852,11 +901,12 @@ export const register: Register = (on) => {
       if (project !== null && choosingKeys?.project === project) {
         const draft = choosingKeys.keys;
         return (
-          <Box flexDirection="column" gap="xs">
+          <Box flexDirection="column" gap={space('xs')}>
             {tokens.map((token) => (
               <Button
                 key={`token-${token.id}`}
                 plain
+                {...quiet}
                 label={`${draft.has(token.id) ? '☑' : '☐'} ${token.name} · ${expiry(token)}`}
                 onPress={() =>
                   redraw($, () => {
@@ -883,7 +933,7 @@ export const register: Register = (on) => {
         );
       }
       return (
-        <Box flexDirection="column" gap="xs">
+        <Box flexDirection="column" gap={space('xs')}>
           {value.items.length === 0 ? <Text dimColor>None listed</Text> : null}
           {value.items.map((key) => (
             <Text key={key.id}>
@@ -929,18 +979,18 @@ export const register: Register = (on) => {
         <Box
           key={card.serviceId}
           flexDirection="column"
-          gap="sm"
+          gap={space('sm')}
           borderStyle="round"
           borderColor={options.marked ? 'claude' : 'subtle'}
           borderDimColor={!options.marked}
           paddingX={1}
-          paddingY="xs"
+          paddingY={space('xs')}
         >
           {/* The kind above, the service's name under it, which opens its detail; its own name under that. */}
           {options.head ?? (
             <Box flexDirection="row" gap={1} alignItems="center">
               {markOf(card.provider, card.title)}
-              <Box flexDirection="column" alignItems="flex-start" gap="xs" flexGrow={1} flexShrink={1}>
+              <Box flexDirection="column" alignItems="flex-start" gap={space('xs')} flexGrow={1} flexShrink={1}>
                 {meta(card.kind)}
                 {opens ? (
                   named(`open-${card.serviceId}`, opens, card.title)
@@ -986,7 +1036,14 @@ export const register: Register = (on) => {
       }[],
     ) =>
       choosingFields === where ? (
-        <Box flexDirection="column" gap="xs" borderStyle="round" borderColor="suggestion" paddingX={1} paddingY="xs">
+        <Box
+          flexDirection="column"
+          gap={space('xs')}
+          borderStyle="round"
+          borderColor="suggestion"
+          paddingX={1}
+          paddingY={space('xs')}
+        >
           {groups.map((group) => (
             <Box key={group.name} flexDirection="column">
               <Text weight="semibold">{group.name}</Text>
@@ -994,6 +1051,7 @@ export const register: Register = (on) => {
                 <Button
                   key={`field-${where}-${group.type}-${each.id}`}
                   plain
+                  {...quiet}
                   label={`${group.on.includes(each.id) ? '☑' : '☐'} ${each.label}`}
                   onPress={() => toggleField($, view, where, group.type, each.id)}
                 />
@@ -1043,7 +1101,7 @@ export const register: Register = (on) => {
           borderColor={severity.color}
           borderDimColor
           paddingX={1}
-          paddingY="xs"
+          paddingY={space('xs')}
         >
           <Box flexDirection="row" alignItems="center" gap={1} flexShrink={1}>
             <Text color={severity.color}>●</Text>
@@ -1111,12 +1169,12 @@ export const register: Register = (on) => {
         <Box
           key={key}
           flexDirection="column"
-          gap="sm"
+          gap={space('sm')}
           borderStyle="round"
           borderColor="subtle"
           borderDimColor
           paddingX={1}
-          paddingY="sm"
+          paddingY={space('sm')}
         >
           {heading(first, right)}
           {second}
@@ -1124,7 +1182,7 @@ export const register: Register = (on) => {
       );
       // The names a row links to, quiet on the line under its title, with room between them.
       const links = (children: RenderChildren) => (
-        <Box flexDirection="row" flexWrap="wrap" alignItems="center" gap="lg">
+        <Box flexDirection="row" flexWrap="wrap" alignItems="center" gap={space('lg')}>
           {children}
         </Box>
       );
@@ -1187,33 +1245,37 @@ export const register: Register = (on) => {
               ),
         );
       return frame(
-        <Box flexDirection="column" gap="xl">
+        <Box flexDirection="column" gap={space('xl')}>
           {bar}
           {status}
           {notes}
-          <Box flexDirection="column" gap="xs">
-            {title(view.organization.name)}
-            {meta(
-              `${plural(view.projects.length, 'project')} · ${plural(view.providers.length, 'service')}${waiting > 0 ? ` · ${waiting} waiting for your OK` : ''}`,
-            )}
+          <Box flexDirection="row" alignItems="flex-start" justifyContent="space-between" gap={1} flexWrap="wrap">
+            <Box flexDirection="column" gap={space('xs')} flexShrink={1}>
+              {title(view.organization.name)}
+              {meta(
+                `${plural(view.projects.length, 'project')} · ${plural(view.providers.length, 'service')}${waiting > 0 ? ` · ${waiting} waiting for your OK` : ''}`,
+              )}
+            </Box>
+            {/* Another Stackwarden account or organization: connecting again replaces this computer's key. */}
+            {busy ? null : textButton('switch-account', 'Switch account', () => act($, 'switch'))}
           </Box>
           {autoUpdateOffer}
-          <Box flexDirection="column" gap="md">
+          <Box flexDirection="column" gap={space('md')}>
             {section('Projects')}
             {view.projects.length === 0 ? meta('No projects yet.') : null}
             {buckets.map((bucket) => (
-              <Box key={bucket ?? 'all'} flexDirection="column" gap="md">
+              <Box key={bucket ?? 'all'} flexDirection="column" gap={space('md')}>
                 {bucket ? <Text weight="semibold">{bucket}</Text> : null}
                 {view.projects.filter((project) => project.bucket === bucket).map(projectLines)}
               </Box>
             ))}
           </Box>
-          <Box flexDirection="column" gap="md">
+          <Box flexDirection="column" gap={space('md')}>
             {heading(section('Tasks'), <Link href={view.links.home} label="On the dashboard ↗" />)}
             {tasks.length === 0 ? meta('Nothing needs you now.') : null}
             {tasks.map((task) => taskRow(task, true))}
           </Box>
-          <Box flexDirection="column" gap="md">
+          <Box flexDirection="column" gap={space('md')}>
             {heading(section('Services'), <Link href={view.links.services} label="On the dashboard ↗" />)}
             {view.providers.length === 0 ? (
               meta('No services yet.')
@@ -1252,7 +1314,7 @@ export const register: Register = (on) => {
       const types = [...new Set(uses.map(({ card }) => card.type))];
       const name = provider?.title ?? uses[0]?.card.title ?? current.provider;
       return frame(
-        <Box flexDirection="column" gap="xl">
+        <Box flexDirection="column" gap={space('xl')}>
           {bar}
           {notes}
           {heading(
@@ -1261,7 +1323,7 @@ export const register: Register = (on) => {
           )}
           {provider ? meta(provider.summary) : null}
           {provider && provider.accounts.length > 0 ? (
-            <Box flexDirection="column" gap="xs">
+            <Box flexDirection="column" gap={space('xs')}>
               {section('Accounts')}
               {provider.accounts.map((account) =>
                 boxed(
@@ -1283,7 +1345,7 @@ export const register: Register = (on) => {
             fieldsButton('detail'),
           )}
           {picker('detail', cardGroups('detail', types))}
-          <Box flexDirection="column" gap="md">
+          <Box flexDirection="column" gap={space('md')}>
             {uses.map(({ project, card }) =>
               serviceCard(card, fieldsFor(view, 'detail', card.type), null, {
                 marked: project.id === current.from,
@@ -1332,10 +1394,10 @@ export const register: Register = (on) => {
       };
       const free = team.projects.filter((each) => each.stackwarden === null);
       return (
-        <Box flexDirection="column" gap="sm">
+        <Box flexDirection="column" gap={space('sm')}>
           {section('Vercel')}
           {meta('No Vercel project is matched to this repo yet. Which one is it?')}
-          <Box flexDirection="row" flexWrap="wrap" alignItems="center" gap="lg">
+          <Box flexDirection="row" flexWrap="wrap" alignItems="center" gap={space('lg')}>
             {free.map((each) => textButton(`pick-${each.id}`, each.name, link(each.id)))}
             {textButton('pick-none', 'None of these', link('none'))}
           </Box>
@@ -1347,7 +1409,7 @@ export const register: Register = (on) => {
     const project = view.projects.find((each) => each.id === current.id);
     if (!project) {
       return frame(
-        <Box flexDirection="column" gap="xl">
+        <Box flexDirection="column" gap={space('xl')}>
           {bar}
           {meta(`That project is no longer in ${view.organization.name}.`)}
         </Box>,
@@ -1362,11 +1424,11 @@ export const register: Register = (on) => {
     const urgent = tasks.filter((task) => task.severity !== 'info');
     const later = tasks.filter((task) => task.severity === 'info');
     return frame(
-      <Box flexDirection="column" gap="xl">
+      <Box flexDirection="column" gap={space('xl')}>
         {bar}
         {status}
         {notes}
-        <Box flexDirection="column" gap="xs">
+        <Box flexDirection="column" gap={space('xs')}>
           {heading(
             [
               <Text key="dot" color={PROJECT_COLORS[project.color]}>
@@ -1385,7 +1447,7 @@ export const register: Register = (on) => {
         </Box>
         {isRepo ? vercelMatch() : null}
         {tasks.length + waiting.length > 0 ? (
-          <Box flexDirection="column" gap="md">
+          <Box flexDirection="column" gap={space('md')}>
             {section('Tasks')}
             {urgent.map((task) => taskRow(task, false))}
             {waiting.map(approvalRow)}
@@ -1395,7 +1457,7 @@ export const register: Register = (on) => {
         {heading(section(plural(project.cards.length, 'service')), fieldsButton('project'))}
         {picker('project', cardGroups('project', types))}
         {project.cards.length === 0 ? meta('No services yet.') : null}
-        <Box flexDirection="column" gap="xl">
+        <Box flexDirection="column" gap={space('xl')}>
           {project.cards.map((card) =>
             serviceCard(card, fieldsFor(view, 'project', card.type), () =>
               go($, { kind: 'service', provider: card.provider, from: project.id }),
