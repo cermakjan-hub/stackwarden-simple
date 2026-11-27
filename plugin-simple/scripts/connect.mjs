@@ -78,6 +78,8 @@ export async function listen(folder, base, nonce) {
     approveUrl: started.approve_url,
     startedAt: Date.now(),
     expiresAt,
+    // So that cancelling stops this listener, and a Connect clicked later finishes nothing.
+    pid: process.pid,
   });
   let taken = false;
   const stop = setTimeout(() => server.close(), Math.max(0, expiresAt + GRACE_MS - Date.now()));
@@ -173,6 +175,31 @@ export async function connect(folder, self, base) {
   return { error: "Connecting didn't start. Try again." };
 }
 
+/**
+ * Stops connecting, as the panel's Cancel does: the listener stops, so a Connect clicked later on the
+ * page finishes nothing, and the wait ends. This computer stays as it was. Whether anything was
+ * waiting. Only a listener this folder started within its life is stopped, by the process it named.
+ * @param {string} folder
+ * @returns {boolean}
+ */
+export function cancelConnecting(folder) {
+  const pending = readJson(join(folder, PENDING));
+  rmQuietly(join(folder, PENDING));
+  rmQuietly(join(folder, FAILED));
+  if (!pending) return false;
+  const pid = Number(pending.pid);
+  const young =
+    Date.now() - Number(pending.startedAt) < Number(pending.expiresAt) - Number(pending.startedAt) + GRACE_MS;
+  if (Number.isInteger(pid) && pid > 0 && pid !== process.pid && young) {
+    try {
+      process.kill(pid);
+    } catch {
+      // It had stopped already.
+    }
+  }
+  return true;
+}
+
 /** Opens the person's browser at a page of the Stackwarden this computer connects to, and nothing else. @param {string} url @param {string} base */
 export function openBrowser(url, base) {
   if (new URL(url).origin !== new URL(base).origin || !/^[A-Za-z0-9:/?=._~%-]+$/.test(url)) return;
@@ -197,7 +224,7 @@ export function openBrowser(url, base) {
  * Waits for the person's approval, for up to `seconds`: the listener saves the key when they click
  * Connect. Stackwarden is asked only whether they denied it or let it expire.
  * @param {string} folder @param {string} base @param {number} seconds
- * @returns {Promise<'approved' | 'waiting' | 'denied' | 'expired' | 'failed'>}
+ * @returns {Promise<'approved' | 'waiting' | 'denied' | 'expired' | 'failed' | 'cancelled'>}
  */
 export async function waitForApproval(folder, base, seconds) {
   const pending = readJson(join(folder, PENDING));
@@ -209,6 +236,8 @@ export async function waitForApproval(folder, base, seconds) {
       rmQuietly(join(folder, PENDING));
       return 'approved';
     }
+    // The person cancelled it from the panel, or started connecting again.
+    if (readJson(join(folder, PENDING))?.nonce !== pending.nonce) return 'cancelled';
     if (readJson(join(folder, FAILED))?.nonce === pending.nonce) return 'failed';
     const status = await pairingStatus(base, pending.id, pending.secret);
     if (status === 'denied' || (status === 'expired' && Date.now() > pending.expiresAt + GRACE_MS)) {

@@ -19,8 +19,10 @@ const WATCH_EVERY_MS = 3_000;
 const WATCH_FOR_MS = 3 * 60_000;
 const STATE_FILES = ['reader-state.json', 'panel-summary.json'];
 const FIELDS_KEY = 'fields-v3';
-/** Kept once the person says "Not now" to auto-update, so Home stops offering it. */
+/** Kept once the person dismisses the auto-update task, so Home stops offering it. */
 const AUTO_UPDATE_DECLINED = 'auto-update-declined';
+/** The newer version whose task the person dismissed; a version after it is a task again. */
+const UPDATE_DISMISSED = 'update-dismissed';
 const LONG_MS = 10 * 60_000;
 const SHORT_MS = 30_000;
 const DAY_MS = 24 * 60 * 60_000;
@@ -167,7 +169,7 @@ const BUSY: Record<Action | Errand, string> = {
   autoupdate: 'Turning on auto-update…',
   update: 'Updating Stackwarden. It takes up to a minute…',
   switch:
-    'Stackwarden opened in your browser. Use another account there if you need to, then click Connect. Until then this computer stays where it is.',
+    'Stackwarden opened in your browser. Check the account it names at the top, or use another one, then click Connect. Until then this computer stays where it is.',
 };
 
 // A service's detail compares its projects: cost, deploys and keys first, where a provider has them.
@@ -215,12 +217,15 @@ let serviceSearch = '';
 /** This plugin's version, from its plugin.json, read at session start. */
 let ownVersion: string | null = null;
 let autoUpdateDeclined = false;
+let dismissedVersion: string | null = null;
 /** Why the scripts can't run, when the last read got no answer; null when they can. */
 let nodeProblem: string | null = null;
 /** When the state files had last changed as the panel last read them. */
 let drawnAt = 0;
 /** "Update now" installed a newer version, which runs once the person reloads or starts a session. */
 let updated = false;
+/** The person pressed Cancel while connecting. */
+let cancelling = false;
 
 const isObject = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null;
 
@@ -329,13 +334,25 @@ async function refreshView($: EngineInterface): Promise<void> {
   await reload($);
 }
 
-/** Runs a command, then its `wait` while it says to wait, a few times at most. */
+/** Runs a command, then its `wait` while it says to wait, a few times at most, or until cancelled. */
 async function untilDone($: EngineInterface, command: string, waiting: string): Promise<Answer> {
   let answer = asAnswer(await sw($, [command], LONG_MS));
-  for (let tries = 0; answer.next === waiting && tries < 6; tries += 1) {
+  for (let tries = 0; answer.next === waiting && tries < 6 && !cancelling; tries += 1) {
     answer = asAnswer(await sw($, [command, 'wait'], LONG_MS));
   }
-  return answer;
+  // Cancelled while the listener was still starting: stop it now that it has.
+  return cancelling ? asAnswer(await sw($, [command, 'cancel'], SHORT_MS)) : answer;
+}
+
+/**
+ * The Cancel beside a connection the browser waits for: it stops the listener, so the wait ends
+ * within seconds and the panel is as it was, ready to connect again, say after signing in to the
+ * right account.
+ */
+async function cancelConnecting($: EngineInterface): Promise<void> {
+  cancelling = true;
+  $.ui.invalidate('ui.render');
+  await sw($, ['connect', 'cancel'], SHORT_MS);
 }
 
 async function act($: EngineInterface, action: Action | Errand, args: string[] = []): Promise<void> {
@@ -361,6 +378,7 @@ async function act($: EngineInterface, action: Action | Errand, args: string[] =
     note = 'That did not finish. Try again.';
   } finally {
     busy = null;
+    cancelling = false;
     await reload($);
   }
 }
@@ -521,6 +539,8 @@ export const register: Register = (on) => {
       chosen = kept as unknown as Chosen;
     }
     autoUpdateDeclined = (await $.store.get(AUTO_UPDATE_DECLINED)) === true;
+    const dismissed = await $.store.get(UPDATE_DISMISSED);
+    dismissedVersion = typeof dismissed === 'string' ? dismissed : null;
     ownVersion = await readOwnVersion($);
     await $.command.register({ name: COMMAND, description: 'Open the Stackwarden panel' });
     void $.ui.open({ id: PANE, title: 'Stackwarden' });
@@ -553,12 +573,12 @@ export const register: Register = (on) => {
     const draws = e.surface === 'desktop' || e.surface === 'mobile';
     /**
      * VS Code's panel (extension 2.1.332) takes spacing only as a number of lines or characters, and
-     * drops a step's name, so a box's text sat on its border there. It also fills every Button but a
-     * dim one, whatever `plain` says. Those are the two places the panel draws VS Code its own way.
+     * drops a step's name, so a box's text sat on its border there: the one place the panel draws VS
+     * Code its own way. VS Code also fills every Button but a dim one in its theme's button colour,
+     * whatever `plain` says. That stays: dimmed, nothing in the panel caught the eye (owner, 0.5.1).
      */
     const vscode = e.surface === 'vscode';
     const space = (step: Step) => (vscode ? VSCODE_SPACE[step] : step);
-    const quiet = vscode ? { dimColor: true as const } : {};
     // A field's label column, in cells, worked out from the pane's own width.
     const columns = typeof e.props.bodyColumns === 'number' && e.props.bodyColumns > 0 ? e.props.bodyColumns : 60;
     const labelWidth = Math.max(10, Math.round(columns * 0.3));
@@ -587,10 +607,10 @@ export const register: Register = (on) => {
     );
 
     /**
-     * A button as text, with no fill and no border, to keep the panel light. A desktop's border takes
-     * a line above and below what it holds, so an outline doubled a button's height. The main action
-     * of a place is the one filled button. One design for every surface (ADR 0081): each draws a plain
-     * button its own way.
+     * A control, such as Refresh or Switch account: a filled button on every surface, so it catches the
+     * eye as it does in VS Code, which fills every button that isn't dim (owner, 0.5.1). The main
+     * action of a place is the surface's primary button. A name that opens what it names is `named`,
+     * which stays a link.
      */
     const textButton = (key: string, label: string, onPress: () => unknown, main = false) => (
       <Button
@@ -600,7 +620,7 @@ export const register: Register = (on) => {
         onPress={() => {
           void onPress();
         }}
-        {...(main ? { variant: 'primary' as const } : { plain: true as const, ...quiet })}
+        {...(main ? { variant: 'primary' as const } : {})}
       />
     );
 
@@ -618,7 +638,7 @@ export const register: Register = (on) => {
       options: { color?: Color; quiet?: boolean } = {},
     ) => {
       const button = (
-        <Button key={key} plain onPress={onPress} {...(options.quiet ? { dimColor: true } : quiet)}>
+        <Button key={key} plain onPress={onPress} {...(options.quiet ? { dimColor: true } : {})}>
           <Text weight={options.quiet ? 'regular' : 'semibold'}>{name}</Text>
           <Text dimColor> ›</Text>
         </Button>
@@ -708,13 +728,32 @@ export const register: Register = (on) => {
         </Box>
       );
 
-    const notes =
-      busy || note ? (
-        <Box flexDirection="column">
-          {busy ? meta(busy) : null}
-          {note ? meta(note) : null}
+    // A connection the browser waits for says so in a box of its own, with a way out: the person may
+    // have closed the page, or be signed in to the wrong account.
+    const connecting = busy === BUSY.connect || busy === BUSY.switch;
+    const notes = connecting ? (
+      <Box
+        flexDirection="row"
+        alignItems="center"
+        justifyContent="space-between"
+        gap={1}
+        flexWrap="wrap"
+        borderStyle="round"
+        borderColor="suggestion"
+        paddingX={1}
+        paddingY={space('xs')}
+      >
+        <Box flexDirection="column" flexShrink={1}>
+          <Text>{busy}</Text>
         </Box>
-      ) : null;
+        {cancelling ? meta('Cancelling…') : textButton('connect-cancel', 'Cancel', () => cancelConnecting($))}
+      </Box>
+    ) : busy || note ? (
+      <Box flexDirection="column">
+        {busy ? meta(busy) : null}
+        {note ? meta(note) : null}
+      </Box>
+    ) : null;
 
     // The top bar of every view: Dashboard and Back on the left, when it was read and Refresh on the right.
     const navigation = (
@@ -767,54 +806,52 @@ export const register: Register = (on) => {
         ) : null}
       </Box>
     );
-    // Buttons wait while a step runs. The update says what it is doing in its own box, and once it is
-    // installed, what makes it run: Claude Code loads a plugin when a session starts or reloads.
-    const updateNotice = !newer
-      ? null
-      : updated
-        ? boxed(
-            'update',
-            'suggestion',
-            [
-              <Text key="out" weight="semibold">
-                Stackwarden {newer} is installed
-              </Text>,
-              meta('To use it, type /reload-plugins in the chat, or start a new session.'),
-            ],
+    /**
+     * The plugin's own tasks, first among Home's (owner, 0.5.1): a newer version, and auto-update
+     * while new versions don't arrive by themselves. Each can be dismissed, and stays so on this
+     * computer: a version until a newer one is out, auto-update for good. Buttons wait while a step
+     * runs; the update says what it is doing, and once installed, what makes it run, as Claude Code
+     * loads a plugin when a session starts or reloads. Drawn with `taskBox`, below, when Home is.
+     */
+    const pluginTasks = () => [
+      newer && updated
+        ? taskBox(
+            'plugin-update-task',
+            'info',
+            `Stackwarden ${newer} is installed`,
+            'To use it, type /reload-plugins in the chat, or start a new session.',
             null,
           )
-        : boxed(
-            'update',
-            'suggestion',
-            [
-              <Text key="out" weight="semibold">
-                Stackwarden {newer} is out
-              </Text>,
-              meta(
-                busy === BUSY.update
-                  ? BUSY.update
-                  : `You have ${ownVersion ?? 'an older one'}.${autoUpdate === false ? ' With auto-update on, new versions arrive by themselves.' : ''}`,
-              ),
-            ],
-            busy
-              ? null
-              : [
-                  textButton('plugin-update', 'Update now', () => act($, 'update'), true),
-                  autoUpdate === false ? turnOnAutoUpdate() : null,
-                ],
-          );
-    // Home offers auto-update once, while new versions don't arrive by themselves; "Not now" is kept.
-    const autoUpdateOffer =
-      !newer && autoUpdate === false && !autoUpdateDeclined
-        ? boxed(
-            'auto-update',
-            'subtle',
-            meta('New versions of Stackwarden arrive by themselves only with auto-update on.'),
+        : newer && newer !== dismissedVersion
+          ? taskBox(
+              'plugin-update-task',
+              'warning',
+              `Stackwarden ${newer} is out`,
+              busy === BUSY.update ? BUSY.update : `You have ${ownVersion ?? 'an older one'}`,
+              busy
+                ? null
+                : [
+                    textButton('plugin-update', 'Update now', () => act($, 'update'), true),
+                    textButton('plugin-update-dismiss', 'Dismiss', () =>
+                      redraw($, () => {
+                        dismissedVersion = newer;
+                        void $.store.set(UPDATE_DISMISSED, newer);
+                      }),
+                    ),
+                  ],
+            )
+          : null,
+      autoUpdate === false && !autoUpdateDeclined
+        ? taskBox(
+            'auto-update-task',
+            'info',
+            'Turn on auto-update',
+            'New versions of Stackwarden arrive by themselves only with auto-update on.',
             busy
               ? null
               : [
                   turnOnAutoUpdate(),
-                  textButton('auto-update-later', 'Not now', () =>
+                  textButton('auto-update-later', 'Dismiss', () =>
                     redraw($, () => {
                       autoUpdateDeclined = true;
                       void $.store.set(AUTO_UPDATE_DECLINED, true);
@@ -822,13 +859,13 @@ export const register: Register = (on) => {
                   ),
                 ],
           )
-        : null;
+        : null,
+    ];
 
-    // The top of every view: the navigation, then a newer version when there is one.
+    // The top of every view: the navigation.
     const bar = (
       <Box flexDirection="column" gap={space('xl')}>
         {navigation}
-        {updateNotice}
       </Box>
     );
 
@@ -906,7 +943,6 @@ export const register: Register = (on) => {
               <Button
                 key={`token-${token.id}`}
                 plain
-                {...quiet}
                 label={`${draft.has(token.id) ? '☑' : '☐'} ${token.name} · ${expiry(token)}`}
                 onPress={() =>
                   redraw($, () => {
@@ -1051,7 +1087,6 @@ export const register: Register = (on) => {
                 <Button
                   key={`field-${where}-${group.type}-${each.id}`}
                   plain
-                  {...quiet}
                   label={`${group.on.includes(each.id) ? '☑' : '☐'} ${each.label}`}
                   onPress={() => toggleField($, view, where, group.type, each.id)}
                 />
@@ -1075,8 +1110,9 @@ export const register: Register = (on) => {
       );
 
     /** A heading with something on its right, such as a button. */
+    // A terminal without links writes a Link's URL after its text, so a long one goes to its own line.
     const heading = (left: RenderChildren, right: RenderChildren = null) => (
-      <Box flexDirection="row" gap={1} alignItems="center" justifyContent="space-between">
+      <Box flexDirection="row" gap={1} alignItems="center" justifyContent="space-between" flexWrap="wrap">
         <Box flexDirection="row" gap={1} alignItems="center" flexShrink={1}>
           {left}
         </Box>
@@ -1121,7 +1157,9 @@ export const register: Register = (on) => {
 
     /**
      * A task from the dashboard's list. On Home its project's name opens the project; on the project's
-     * own page that name would lead nowhere new, so it is left out.
+     * own page that name would lead nowhere new, so it is left out. Its ↗ opens it on the dashboard,
+     * except on a terminal: one without links writes the whole URL after the ↗, which pushed the task's
+     * own title out of its row. There, "On the dashboard" above the tasks leads to them.
      */
     const taskRow = (task: View['tasks'][number], showProject: boolean) => {
       const project = showProject ? projectNamed(task.project?.id ?? null) : null;
@@ -1132,7 +1170,7 @@ export const register: Register = (on) => {
               quiet: true,
             })
           : null,
-        <Link key="open" href={task.url} label="↗" />,
+        e.surface === 'terminal' ? null : <Link key="open" href={task.url} label="↗" />,
       ]);
     };
 
@@ -1161,6 +1199,7 @@ export const register: Register = (on) => {
     if (current.kind === 'home') {
       // A project's waiting services are answered in the project; those for a project not made yet stay here.
       const tasks = view.tasks.filter((task) => task.kind !== APPROVALS || task.project === null);
+      const ownTasks = pluginTasks().filter((task) => task !== null);
       const waiting = view.projects.reduce((sum, project) => sum + project.waiting, 0);
       const buckets = [...new Set(view.projects.map((project) => project.bucket))];
       const found = view.providers.filter((provider) => matchesSearch(provider, serviceSearch));
@@ -1259,7 +1298,6 @@ export const register: Register = (on) => {
             {/* Another Stackwarden account or organization: connecting again replaces this computer's key. */}
             {busy ? null : textButton('switch-account', 'Switch account', () => act($, 'switch'))}
           </Box>
-          {autoUpdateOffer}
           <Box flexDirection="column" gap={space('md')}>
             {section('Projects')}
             {view.projects.length === 0 ? meta('No projects yet.') : null}
@@ -1272,7 +1310,8 @@ export const register: Register = (on) => {
           </Box>
           <Box flexDirection="column" gap={space('md')}>
             {heading(section('Tasks'), <Link href={view.links.home} label="On the dashboard ↗" />)}
-            {tasks.length === 0 ? meta('Nothing needs you now.') : null}
+            {ownTasks.length === 0 && tasks.length === 0 ? meta('Nothing needs you now.') : null}
+            {ownTasks}
             {tasks.map((task) => taskRow(task, true))}
           </Box>
           <Box flexDirection="column" gap={space('md')}>

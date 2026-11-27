@@ -7,7 +7,7 @@
 //   scan [dir]               look through the repo here, and say what's next; sends nothing
 //   status [dir] [--vercel]  what's next: set up or sign in the Vercel CLI, connect, choose a team, read
 //   install | login [wait]   how to install the Vercel CLI; its own sign-in, in the browser
-//   connect [wait [secs]]    connect this computer to Stackwarden, in the browser
+//   connect [wait [secs]|cancel]  connect this computer to Stackwarden, in the browser; cancel stops it
 //   team <id>                the Vercel team to read, when the CLI sees several
 //   read [dir] [--keep]      read Vercel here; send it only once the person has said yes to a first
 //                            send, and never with --keep. Before that yes, the recipe's `later`
@@ -26,7 +26,7 @@ import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { findOnPath, run } from './cli.mjs';
-import { connect, listen, openBrowser, waitForApproval } from './connect.mjs';
+import { cancelConnecting, connect, listen, openBrowser, waitForApproval } from './connect.mjs';
 import { detect } from './detect.mjs';
 import * as local from './local.mjs';
 import { filedRepo, panelStatus, repoAt, repoKey, suggestedTokens, teamView } from './panel-data.mjs';
@@ -307,11 +307,18 @@ async function main(data) {
       return;
     }
     case 'connect': {
+      if (rest[0] === 'cancel') {
+        cancelConnecting(data);
+        return organization
+          ? answer(`Cancelled. This computer stays connected to ${named(organization)}.`, 'done')
+          : answer('Cancelled. Connect this computer when you are ready.', 'connect');
+      }
       if (rest[0] === 'wait') {
         const seconds = Math.min(Number(rest[1] ?? '90') || 90, 540);
         const result = await waitForApproval(data, base, seconds);
         if (result === 'waiting')
           return answer('Not approved yet: click Connect this computer in the browser.', 'connect_wait');
+        if (result === 'cancelled') return answer('Connecting was cancelled.', organization ? 'done' : 'connect');
         if (result !== 'approved') return answer("Connecting didn't go through. It can be started again.", 'connect');
         // Connected: go straight on to reading Vercel here, so the person's one question comes next.
         config = local.config(data);

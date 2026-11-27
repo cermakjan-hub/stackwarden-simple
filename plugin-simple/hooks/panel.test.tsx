@@ -227,6 +227,8 @@ function engine(
   node: string | null = 'v24.1.0',
   /** When the plugin's state files last changed; without it, the panel has no data folder to look at. */
   stateChangedAt?: () => number,
+  /** A test's own answer to a step of the script, or undefined for the usual one. */
+  answers?: (argv: readonly string[]) => Promise<object> | undefined,
 ) {
   on('command.register', () => ({ value: { command: 'stackwarden' } }));
   on('ui.open', () => ({ value: { isPlaced: true } }));
@@ -255,6 +257,8 @@ function engine(
     if (e.argv[1] === '--version') return node === null ? answer('', 1) : answer(`${node}\n`);
     if (node === null || Number(/^v(\d+)\./.exec(node)?.[1]) < 22) return answer('', 1);
     const command = e.argv[2];
+    const own = answers?.(e.argv);
+    if (own) return own.then((value) => answer(JSON.stringify(value)));
     if (command === 'panel') return answer(JSON.stringify(panel));
     if (command === 'update') return answer(JSON.stringify({ say: 'Stackwarden is updated.', next: 'reload' }));
     return answer(JSON.stringify({ say: 'Done.', next: 'done' }));
@@ -280,9 +284,10 @@ test("opens on the repo's project with its cards and their default fields, on ev
     expect(await ui.find({ type: 'Text', text: /Web deploy/ })).toBeDefined();
     expect(await ui.find({ type: 'Text', text: /USD 3\.20/ })).toBeUndefined();
     expect(await ui.find({ type: 'Button', key: 'nav-home', text: /Dashboard/ })).toBeDefined();
-    // Text with no fill, the same on every surface (ADR 0081): each draws a plain button its own way.
+    // A control, filled on every surface, as VS Code fills every button that isn't dim (owner, 0.5.1).
     const nav = await ui.find({ type: 'Button', key: 'nav-home' });
-    expect(nav?.props.plain).toBe(true);
+    expect(nav?.props.plain).toBeUndefined();
+    expect(nav?.props.dimColor).toBeUndefined();
     await ui.unmount();
   }
 });
@@ -314,9 +319,11 @@ test("lists a waiting service among its project's tasks and approves it there, t
   expect(tasks.map((each) => each.text)).toEqual(['Web deploy expires in 26 days', 'Resend waits for your OK']);
   expect(await ui.find({ type: 'Text', text: 'When you can · Email' })).toBeDefined();
   expect(await ui.find({ type: 'Text', text: 'Waiting for your OK' })).toBeUndefined();
-  // Approve, the main action, is the one filled button; Reject is text.
+  // Approve, the main action, is the surface's primary button; Reject a filled control beside it.
   expect((await ui.find({ type: 'Button', key: `approve-${RESEND}` }))?.props.variant).toBe('primary');
-  expect((await ui.find({ type: 'Button', key: `reject-${RESEND}` }))?.props.plain).toBe(true);
+  const reject = await ui.find({ type: 'Button', key: `reject-${RESEND}` });
+  expect(reject?.props.variant).toBeUndefined();
+  expect(reject?.props.plain).toBeUndefined();
   await ui.press({ key: 'approve-44444444-4444-4444-8444-444444444444' });
   expect(runs.find((argv) => argv[2] === 'inbox')?.slice(2)).toEqual([
     'inbox',
@@ -345,6 +352,21 @@ test('shows Home with no Projects or Services button, and the tasks one to a lin
   await ui.press({ key: 'task-key-expiring:k1' });
   expect(await ui.find({ type: 'Text', text: 'Resend waits for your OK' })).toBeDefined();
   await ui.unmount();
+});
+
+test("keeps a task's title in its row on a terminal, where a link writes its whole URL", async ($, on) => {
+  engine(on, []);
+  await started($);
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const ui = await $.ui.mount({ ...PANE, surface });
+    await ui.press({ key: 'nav-home' });
+    expect(await ui.find({ type: 'Text', text: 'Web deploy expires in 26 days' })).toBeDefined();
+    const links = await ui.findAll({ type: 'Link', text: /^↗$/ });
+    expect(links.length === 0).toBe(surface === 'terminal');
+    // The tasks stay one link away: "On the dashboard" above them.
+    expect(await ui.find({ type: 'Link', text: 'On the dashboard ↗' })).toBeDefined();
+    await ui.unmount();
+  }
 });
 
 test('shows each project on Home in two lines: its name, then its services, each opening what it names', async ($, on) => {
@@ -594,28 +616,44 @@ const fromMarketplace = (latest: string, autoUpdate: boolean | null) => ({
   plugin: { autoUpdate },
 });
 
-test('tells of a newer version, updates through the script, and offers auto-update with it', async ($, on) => {
+test('tells of a newer version among the tasks, updates through the script, and offers auto-update', async ($, on) => {
   const runs: string[][] = [];
   engine(on, runs, fromMarketplace('0.5.0', false));
   await started($);
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' });
-  expect(await ui.find({ type: 'Text', text: 'Stackwarden 0.5.0 is out' })).toBeDefined();
-  expect(await ui.find({ type: 'Text', text: /^You have 0\.4\.0\. With auto-update on/ })).toBeDefined();
-  expect((await ui.find({ type: 'Button', key: 'plugin-update' }))?.props.variant).toBe('primary');
-  await ui.press({ key: 'auto-update-on' });
-  expect(runs.find((argv) => argv[2] === 'autoupdate')?.slice(2)).toEqual(['autoupdate', 'on']);
-  // On every view, under the navigation: Home too.
+  // A task, so on Home, first among the tasks; not on a project's page.
+  expect(await ui.find({ type: 'Text', text: 'Stackwarden 0.5.0 is out' })).toBeUndefined();
   await ui.press({ key: 'nav-home' });
   expect(await ui.find({ type: 'Text', text: 'Stackwarden 0.5.0 is out' })).toBeDefined();
-  // The update runs past a press's 10 seconds, so the press only starts it, and the box says what
+  expect(await ui.find({ type: 'Text', text: 'Soon · You have 0.4.0' })).toBeDefined();
+  expect((await ui.find({ type: 'Button', key: 'plugin-update' }))?.props.variant).toBe('primary');
+  expect(await ui.find({ type: 'Text', text: 'Turn on auto-update' })).toBeDefined();
+  await ui.press({ key: 'auto-update-on' });
+  expect(runs.find((argv) => argv[2] === 'autoupdate')?.slice(2)).toEqual(['autoupdate', 'on']);
+  // The update runs past a press's 10 seconds, so the press only starts it, and the task says what
   // makes the new version run once it is installed.
   await ui.press({ key: 'plugin-update' });
   expect(runs.some((argv) => argv[2] === 'update')).toBe(true);
   expect(await ui.find({ type: 'Text', text: 'Stackwarden 0.5.0 is installed' })).toBeDefined();
   expect(
-    await ui.find({ type: 'Text', text: 'To use it, type /reload-plugins in the chat, or start a new session.' }),
+    await ui.find({
+      type: 'Text',
+      text: 'When you can · To use it, type /reload-plugins in the chat, or start a new session.',
+    }),
   ).toBeDefined();
   expect(await ui.find({ type: 'Button', key: 'plugin-update' })).toBeUndefined();
+  await ui.unmount();
+});
+
+test('dismisses a newer version until a newer one is out', async ($, on) => {
+  const stored: unknown[][] = [];
+  engine(on, [], fromMarketplace('0.5.0', true), stored);
+  await started($);
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' });
+  await ui.press({ key: 'nav-home' });
+  await ui.press({ key: 'plugin-update-dismiss' });
+  expect(await ui.find({ type: 'Text', text: 'Stackwarden 0.5.0 is out' })).toBeUndefined();
+  expect(stored).toContainEqual(['update-dismissed', '0.5.0']);
   await ui.unmount();
 });
 
@@ -632,7 +670,32 @@ test('switches this computer to another account from Home, by connecting it agai
   await ui.unmount();
 });
 
-test('draws VS Code its own spacing in numbers, and every button but the main one dim', async ($, on) => {
+test('cancels a connection the browser waits for, and offers Switch account again', async ($, on) => {
+  const runs: string[][] = [];
+  let release: () => void = () => undefined;
+  const cancelled = new Promise<void>((done) => (release = done));
+  engine(on, runs, PANEL, [], 'v24.1.0', undefined, (argv) => {
+    if (argv[2] !== 'connect') return undefined;
+    if (argv[3] === undefined) return Promise.resolve({ say: 'Opened.', next: 'connect_wait' });
+    if (argv[3] === 'wait') return cancelled.then(() => ({ say: 'Connecting was cancelled.', next: 'done' }));
+    release();
+    return Promise.resolve({ say: 'Cancelled. This computer stays connected to “Kancl”.', next: 'done' });
+  });
+  await started($);
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' });
+  await ui.press({ key: 'nav-home' });
+  await ui.press({ key: 'switch-account' });
+  // The page may be closed, or show the wrong account: the wait says so, with a way out.
+  expect(await ui.find({ type: 'Text', text: /^Stackwarden opened in your browser/ })).toBeDefined();
+  expect(await ui.find({ type: 'Button', key: 'switch-account' })).toBeUndefined();
+  await ui.press({ key: 'connect-cancel' });
+  expect(runs.some((argv) => argv[2] === 'connect' && argv[3] === 'cancel')).toBe(true);
+  expect(await ui.find({ type: 'Button', key: 'switch-account' })).toBeDefined();
+  expect(await ui.find({ type: 'Button', key: 'connect-cancel' })).toBeUndefined();
+  await ui.unmount();
+});
+
+test('draws VS Code its own spacing in numbers, and its buttons as every surface', async ($, on) => {
   engine(on, [], fromMarketplace('0.5.0', false));
   await started($);
   for (const surface of ['vscode', 'desktop'] as const) {
@@ -641,9 +704,16 @@ test('draws VS Code its own spacing in numbers, and every button but the main on
     const boxes = await ui.findAll({ type: 'Box' });
     const named = boxes.flatMap((box) => [box.props.gap, box.props.paddingY].filter((v) => typeof v === 'string'));
     expect(named.length === 0).toBe(surface === 'vscode');
-    expect((await ui.find({ type: 'Button', key: 'refresh' }))?.props.dimColor).toBe(
-      surface === 'vscode' ? true : undefined,
-    );
+    // A control is a filled button on every surface, and a name a link: VS Code fills a button that
+    // isn't dim, and dimmed, nothing in the panel caught the eye.
+    const refresh = await ui.find({ type: 'Button', key: 'refresh' });
+    expect(refresh?.props.dimColor).toBeUndefined();
+    expect(refresh?.props.plain).toBeUndefined();
+    const [name] = await ui.findAll({ type: 'Button', text: /›$/ });
+    expect(name?.props.plain).toBe(true);
+    // A project's or a service's name stays a button that isn't dim, which VS Code fills: it flattens
+    // what a button holds to plain text, so a bold or coloured name can't show there.
+    expect(name?.props.dimColor).toBeUndefined();
     expect((await ui.find({ type: 'Button', key: 'plugin-update' }))?.props.variant).toBe('primary');
     expect((await ui.find({ type: 'Button', key: 'plugin-update' }))?.props.dimColor).toBeUndefined();
     await ui.unmount();
@@ -673,7 +743,7 @@ test("says nothing of updates where the plugin isn't its marketplace's copy", as
   await ui.unmount();
 });
 
-test('offers auto-update on Home once, and keeps "Not now"', async ($, on) => {
+test('offers auto-update among the tasks on Home, and keeps its Dismiss', async ($, on) => {
   const runs: string[][] = [];
   const stored: unknown[][] = [];
   engine(on, runs, fromMarketplace(OWN_VERSION, false), stored);

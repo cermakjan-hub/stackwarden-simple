@@ -31,7 +31,7 @@ Everything runs in your own Claude Code session, on your computer. The plugin re
 
 ### Background processes
 
-- **The connection listener** (`scripts/connect.mjs`, `listen`): while you approve this computer, at most 12 minutes, it listens on `127.0.0.1` only, answers one exact address, and stops after one approval.
+- **The connection listener** (`scripts/connect.mjs`, `listen`): while you approve this computer, at most 12 minutes, it listens on `127.0.0.1` only, answers one exact address, and stops after one approval, or when you press Cancel in the panel (`cancelConnecting`).
 - **The session-start reading** (`scripts/sw.mjs`, `hook`): once you have said yes to a first send, when a Claude Code session starts and the last reading is 15 minutes old, it starts a reader in the background that reads Vercel and sends it, without the model and without using the chat.
 - **The rest of the first reading** (`scripts/sw.mjs`, `read --later`): before your first yes, once the projects, domains, latest deploys, costs and tokens are read and Claude has asked you, it reads each project's deploys and visitors and the billing charges into the reading kept on this computer, so the question comes in seconds. It sends nothing; sending waits for it.
 - **The Vercel sign-in** (`vercel login`), while it waits for your approval at Vercel.
