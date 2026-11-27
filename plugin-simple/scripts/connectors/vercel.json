@@ -1,0 +1,207 @@
+{
+  "id": "vercel",
+  "name": "Vercel",
+  "cli": "vercel",
+  "minimumVersion": "65.2.0",
+  "install": "npm install --global vercel",
+  "signIn": { "args": ["login"], "host": "vercel.com" },
+  "env": {
+    "clear": ["VERCEL_", "NOW_", "__VERCEL_"],
+    "set": { "__VERCEL_NATIVE_DOWNLOAD": "0", "VERCEL_TELEMETRY_DISABLED": "1", "NO_COLOR": "1", "FORCE_COLOR": "0" }
+  },
+  "api": { "args": ["api"], "flags": ["--raw"] },
+  "always": ["--non-interactive"],
+  "team": "team_",
+  "accounts": { "list": "teams", "personal": "user" },
+  "reads": [
+    {
+      "name": "teams",
+      "why": "the teams the CLI sees, and each team's plan",
+      "api": "/v2/teams",
+      "query": { "limit": "100" },
+      "page": { "all": "teams" },
+      "keep": {
+        "teams": [
+          {
+            "id": true,
+            "slug": true,
+            "name": true,
+            "billing": {
+              "plan": true,
+              "status": true,
+              "currency": true,
+              "trial": { "start": true, "end": true },
+              "period": { "start": true, "end": true },
+              "invoiceItems": {
+                "pro": { "price": true, "quantity": true },
+                "teamSeats": { "price": true, "quantity": true }
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "user",
+      "why": "who the CLI is signed in as, and whether Vercel paused the account",
+      "api": "/v2/user",
+      "keep": {
+        "user": {
+          "id": true,
+          "username": true,
+          "softBlock": { "blockedAt": true, "reason": true, "blockedDueToOverageType": true, "unpauseAt": true }
+        }
+      }
+    },
+    {
+      "name": "projects",
+      "why": "every project: its name, framework, Git repository and production branch",
+      "api": "/v10/projects",
+      "query": { "limit": "100", "teamId": "{team}" },
+      "page": { "all": "projects" },
+      "items": "projects",
+      "keep": {
+        "projects": [
+          {
+            "id": true,
+            "name": true,
+            "framework": true,
+            "link": { "type": true, "org": true, "repo": true, "productionBranch": true },
+            "updatedAt": true
+          }
+        ]
+      }
+    },
+    {
+      "name": "production deploy",
+      "why": "each project's latest production deploy: its state, time and address",
+      "each": "projects",
+      "api": "/v7/deployments",
+      "query": { "projectId": "{item.id}", "target": "production", "limit": "1", "teamId": "{team}" },
+      "keep": {
+        "deployments": [
+          { "uid": true, "url": true, "readyState": true, "state": true, "createdAt": true, "created": true }
+        ]
+      }
+    },
+    {
+      "name": "domains",
+      "why": "each project's domain names, and whether each is verified",
+      "each": "projects",
+      "api": "/v9/projects/{item.id}/domains",
+      "query": { "limit": "100", "teamId": "{team}" },
+      "keep": { "domains": [{ "name": true, "verified": true, "redirect": true }] }
+    },
+    {
+      "name": "deploys",
+      "why": "each project's deploys of the last 32 days, to count them and their build minutes",
+      "later": true,
+      "each": "projects",
+      "api": "/v7/deployments",
+      "query": { "projectId": "{item.id}", "since": "{since}", "until": "{until}", "limit": "100", "teamId": "{team}" },
+      "page": { "all": "deployments" },
+      "keep": {
+        "deployments": [
+          {
+            "uid": true,
+            "url": true,
+            "readyState": true,
+            "state": true,
+            "createdAt": true,
+            "created": true,
+            "buildingAt": true,
+            "ready": true
+          }
+        ]
+      }
+    },
+    {
+      "name": "visitors",
+      "why": "each project's visitors and page views a day, where Web Analytics is on",
+      "later": true,
+      "each": "projects",
+      "api": "/v1/query/web-analytics/visits/aggregate",
+      "query": {
+        "projectId": "{item.id}",
+        "by": "day",
+        "since": "{since}",
+        "until": "{until}",
+        "limit": "100",
+        "teamId": "{team}"
+      },
+      "keep": { "data": [{ "timestamp": true, "pageviews": true, "visitors": true }] }
+    },
+    {
+      "name": "billing",
+      "why": "billed quantities and costs a day, by project and service, summed here line by line",
+      "later": true,
+      "api": "/v1/billing/charges",
+      "query": { "from": "{sinceIso}", "to": "{untilIso}", "teamId": "{team}" },
+      "lines": true,
+      "keep": {
+        "ChargePeriodStart": true,
+        "ServiceName": true,
+        "ConsumedQuantity": true,
+        "ConsumedUnit": true,
+        "BilledCost": true,
+        "BillingCurrency": true,
+        "ChargeCategory": true,
+        "Tags": { "ProjectId": true }
+      },
+      "group": {
+        "by": [
+          "Tags.ProjectId",
+          "ServiceName",
+          "ChargeCategory",
+          "ConsumedUnit",
+          "BillingCurrency",
+          "day:ChargePeriodStart"
+        ],
+        "sum": ["ConsumedQuantity", "BilledCost"]
+      }
+    },
+    {
+      "name": "costs",
+      "why": "the billing period's costs a day, as Vercel computes them",
+      "command": [
+        "usage",
+        "--json",
+        "--breakdown",
+        "daily",
+        "--since",
+        "{lastMonthStart}",
+        "--until",
+        "{today}",
+        "--scope",
+        "{team}"
+      ],
+      "keep": {
+        "costUnit": true,
+        "breakdown": { "data": [{ "periodKey": true, "services": [{ "name": true, "cost": true, "category": true }] }] }
+      }
+    },
+    {
+      "name": "tokens",
+      "why": "the tokens the person made: names, scopes and dates, never their values",
+      "command": ["tokens", "list", "--json", "--limit", "100"],
+      "page": { "flag": "--next", "next": "pagination.next" },
+      "keep": {
+        "tokens": [
+          {
+            "id": true,
+            "name": true,
+            "createdAt": true,
+            "activeAt": true,
+            "expiresAt": true,
+            "revokedAt": true,
+            "prefix": true,
+            "suffix": true,
+            "scopes": [{ "type": true, "teamId": true }],
+            "origin": true
+          }
+        ],
+        "pagination": { "next": true }
+      }
+    }
+  ]
+}

@@ -1,12 +1,17 @@
 {
   "name": "stackwarden-simple",
-  "version": "0.4.3",
-  "description": "Find what this repo runs on and read your Vercel account into Stackwarden through the Vercel CLI you're signed in to: one browser approval, no keys to paste, and a panel in Claude Code.",
+  "version": "0.5.0",
+  "description": "Find what this repo runs on and read your Vercel account into Stackwarden through the Vercel CLI you're signed in to: one browser approval, no keys to paste, and a panel in Claude Code. Readable source; the README says what it runs and sends.",
   "author": {
-    "name": "Stackwarden"
+    "name": "Stackwarden",
+    "url": "https://stackwarden.vercel.app"
   },
+  "homepage": "https://stackwarden.vercel.app",
+  "repository": "https://github.com/cermakjan-hub/stackwarden-simple",
+  "privacyPolicyUrl": "https://stackwarden.vercel.app/legal/privacy",
+  "supportUrl": "https://github.com/cermakjan-hub/stackwarden-simple/issues",
   "license": "Apache-2.0",
   "network": {
-    "hosts": ["stackwarden.vercel.app", "localhost", "vercel.com", "api.vercel.com"]
+    "hosts": ["stackwarden.vercel.app", "localhost", "127.0.0.1", "[::1]"]
   }
 }

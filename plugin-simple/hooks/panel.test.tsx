@@ -1,4 +1,4 @@
-import { expect, test } from 'claude-code/testing';
+import { expect, mock, test } from 'claude-code/testing';
 import type { TestBody } from 'claude-code/testing';
 
 // The panel as `sw.mjs panel` describes an organization with two projects: the repo's, on Vercel and
@@ -179,9 +179,25 @@ const PANEL = {
       { id: 'token_web', name: 'Web deploy', expiresAt: null },
       { id: 'token_ci', name: 'ci', expiresAt: null },
     ],
-    projects: [{ id: 'prj_web', keys: ['token_web'] }],
+    projects: [
+      { id: 'prj_web', name: 'web', keys: ['token_web'], thisRepo: true, stackwarden: { name: 'web' } },
+      { id: 'prj_blog', name: 'blog', keys: [], thisRepo: false, stackwarden: null },
+    ],
   },
   view: VIEW,
+};
+
+/** The same panel where no Vercel project is this repo's yet: two are in no Stackwarden project. */
+const UNMATCHED = {
+  ...PANEL,
+  team: {
+    ...PANEL.team,
+    projects: [
+      { id: 'prj_shop', name: 'shop', keys: [], thisRepo: false, stackwarden: { name: 'shop' } },
+      { id: 'prj_blog', name: 'blog', keys: [], thisRepo: false, stackwarden: null },
+      { id: 'prj_docs', name: 'docs', keys: [], thisRepo: false, stackwarden: null },
+    ],
+  },
 };
 
 const PANE = {
@@ -209,6 +225,8 @@ function engine(
   panel: object = PANEL,
   stored: unknown[][] = [],
   node: string | null = 'v24.1.0',
+  /** When the plugin's state files last changed; without it, the panel has no data folder to look at. */
+  stateChangedAt?: () => number,
 ) {
   on('command.register', () => ({ value: { command: 'stackwarden' } }));
   on('ui.open', () => ({ value: { isPlaced: true } }));
@@ -220,10 +238,15 @@ function engine(
   });
   // The plugin's own manifest, which says its version.
   on('fs.read', () => ({ value: JSON.stringify({ name: 'stackwarden-simple', version: OWN_VERSION }) }));
-  on('clock.every', () => ({ value: undefined }));
-  on('process.hookEnv', () => ({ value: {} }));
+  // A clock that moves only when a test moves it, so the panel's own refresh waits its turn.
+  const clock = mock.clock(on);
+  const env: Record<string, string> = stateChangedAt ? { CLAUDE_PLUGIN_DATA: '/data' } : {};
+  on('process.hookEnv', () => ({ value: env }));
+  on('fs.stat', () => ({ value: { kind: 'file', size: 1, mtimeMs: stateChangedAt?.() ?? 0, isLink: false } }));
   on('session.cwd', () => ({ value: '/code/web/.claude/worktrees/x' }));
   on('session.start', (_, e) => ({ cwd: e.cwd }));
+  // A shell command the chat runs answers with nothing.
+  on('tool.call', () => ({ result: {} }));
   on('process.run', (_, e) => {
     runs.push([...e.argv]);
     const answer = (stdout: string, exitCode = 0) => ({
@@ -234,6 +257,7 @@ function engine(
     const command = e.argv[2];
     return answer(command === 'panel' ? JSON.stringify(panel) : JSON.stringify({ say: 'Done.', next: 'done' }));
   });
+  return clock;
 }
 
 async function started($: Parameters<TestBody>[0]) {
@@ -254,9 +278,9 @@ test("opens on the repo's project with its cards and their default fields, on ev
     expect(await ui.find({ type: 'Text', text: /Web deploy/ })).toBeDefined();
     expect(await ui.find({ type: 'Text', text: /USD 3\.20/ })).toBeUndefined();
     expect(await ui.find({ type: 'Button', key: 'nav-home', text: /Dashboard/ })).toBeDefined();
-    // Text with no fill, except on the terminal, which draws a button as `[ label ]`.
+    // Text with no fill, the same on every surface (ADR 0081): each draws a plain button its own way.
     const nav = await ui.find({ type: 'Button', key: 'nav-home' });
-    expect(nav?.props.plain).toBe(surface === 'terminal' ? undefined : true);
+    expect(nav?.props.plain).toBe(true);
     await ui.unmount();
   }
 });
@@ -426,6 +450,116 @@ test("chooses a Vercel project's keys in the service detail and saves exactly th
   await ui.press({ key: 'token-token_ci' });
   await ui.press({ key: 'save-keys' });
   expect(runs.find((argv) => argv[2] === 'keys')?.slice(2)).toEqual(['keys', 'prj_web', 'token_web', 'token_ci']);
+  await ui.unmount();
+});
+
+test("names the Vercel project matched to this repo on the repo's page", async ($, on) => {
+  engine(on, []);
+  await started($);
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' });
+  expect(await ui.find({ type: 'Text', text: 'Matched to your Vercel project web.' })).toBeDefined();
+  expect(await ui.find({ type: 'Button', key: 'pick-none' })).toBeUndefined();
+  await ui.unmount();
+});
+
+test('offers the Vercel projects in no Stackwarden project when none is matched, and links the one picked', async ($, on) => {
+  const runs: string[][] = [];
+  engine(on, runs, UNMATCHED);
+  await started($);
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' });
+  expect(await ui.find({ type: 'Text', text: /^No Vercel project is matched to this repo yet/ })).toBeDefined();
+  expect(await ui.find({ type: 'Button', key: 'pick-prj_blog', text: 'blog' })).toBeDefined();
+  expect(await ui.find({ type: 'Button', key: 'pick-prj_docs', text: 'docs' })).toBeDefined();
+  expect(await ui.find({ type: 'Button', key: 'pick-none', text: 'None of these' })).toBeDefined();
+  // One already in a Stackwarden project is not offered.
+  expect(await ui.find({ type: 'Button', key: 'pick-prj_shop' })).toBeUndefined();
+  await ui.press({ key: 'pick-prj_docs' });
+  expect(runs.find((argv) => argv[2] === 'link')?.slice(2)).toEqual([
+    'link',
+    'prj_docs',
+    '/code/web/.claude/worktrees/x',
+  ]);
+  await ui.unmount();
+});
+
+test('reads what it shows again once the chat runs a step of the script, and not for its own reads', async ($, on) => {
+  const runs: string[][] = [];
+  const clock = engine(on, runs);
+  await started($);
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' });
+  await clock.settle();
+  const panelRuns = () => runs.filter((argv) => argv[2] === 'panel').length;
+  // The panel reads again beside the call, without holding the call up.
+  const ran = async (tool: 'Bash' | 'PowerShell', command: string) => {
+    await $.tool.call({ tool, command, agentId: 'a1' });
+    await clock.settle();
+  };
+  const before = panelRuns();
+  const script = 'node "/p/stackwarden-simple/scripts/sw.mjs" --data "/d/stackwarden-simple"';
+  await ran('Bash', `${script} panel`);
+  await ran('Bash', 'ls scripts');
+  expect(panelRuns()).toBe(before);
+  await ran('Bash', `${script} send .`);
+  expect(panelRuns()).toBe(before + 1);
+  await ran('PowerShell', `& ${script} link prj_web .`);
+  expect(panelRuns()).toBe(before + 2);
+  await ui.unmount();
+});
+
+test('asks Stackwarden for the dashboard when it opens and every 10 minutes, as the README says', async ($, on) => {
+  const runs: string[][] = [];
+  const clock = engine(on, runs);
+  await started($);
+  await clock.settle();
+  const views = () => runs.filter((argv) => argv[2] === 'view').length;
+  expect(views()).toBe(1);
+  await clock.advance(9 * 60_000);
+  expect(views()).toBe(1);
+  await clock.advance(60_000);
+  expect(views()).toBe(2);
+});
+
+test('draws the reading the session-start hook sends in the background within seconds, and stops looking after 3 minutes', async ($, on) => {
+  const runs: string[][] = [];
+  let changed = 1;
+  const clock = engine(on, runs, PANEL, [], 'v24.1.0', () => changed);
+  await started($);
+  await clock.settle();
+  const panels = () => runs.filter((argv) => argv[2] === 'panel').length;
+  const before = panels();
+  await clock.advance(3_000);
+  expect(panels()).toBe(before);
+  // The hook's reading lands: Stackwarden answered, and the plugin wrote down what it said.
+  changed = 2;
+  await clock.advance(3_000);
+  expect(panels()).toBe(before + 1);
+  // Past the watch, a change waits for the panel's next reason to read, such as its 10-minute refresh.
+  await clock.advance(4 * 60_000);
+  changed = 3;
+  await clock.advance(3_000);
+  expect(panels()).toBe(before + 1);
+});
+
+test('shows no monthly cost for a service whose bill names none', async ($, on) => {
+  const free = {
+    ...PANEL,
+    view: {
+      ...VIEW,
+      providers: VIEW.providers.map((each) =>
+        each.provider === 'vercel'
+          ? { ...each, monthly: '$0.00', accounts: each.accounts.map((account) => ({ ...account, monthly: '$0.00' })) }
+          : each,
+      ),
+    },
+  };
+  engine(on, [], free);
+  await started($);
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' });
+  await ui.press({ key: 'nav-home' });
+  expect(await ui.find({ type: 'Text', text: '$25/mo' })).toBeDefined();
+  expect(await ui.find({ type: 'Text', text: /\$0(?:\.00)?\/mo/ })).toBeUndefined();
+  await ui.press({ key: 'service-vercel' });
+  expect(await ui.find({ type: 'Text', text: /\$0(?:\.00)?\/mo/ })).toBeUndefined();
   await ui.unmount();
 });
 

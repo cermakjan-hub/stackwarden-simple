@@ -1,4 +1,5 @@
 {
+  "description": "At the start of a Claude Code session, once the person has said yes to a first send, reads their Vercel account through their Vercel CLI and sends it to Stackwarden in a background process, at most every 15 minutes; it prints nothing to the model, and says a problem from the last reading to the person once. The panel module opens the Stackwarden panel beside the chat in every session, asks Stackwarden for what its dashboard shows when it opens and every 10 minutes, and reads the plugin's data folder again after the session runs a step of the plugin's script, for which it sees the text of each Bash and PowerShell command and keeps none of it. For the first 3 minutes of a session it also looks every 3 seconds at when two of the plugin's own state files last changed, and reads them again once they do. No hook approves a call or changes its input.",
   "hooks": {
     "SessionStart": [
       {

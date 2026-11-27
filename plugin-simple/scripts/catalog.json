@@ -1,0 +1,427 @@
+[
+  {
+    "id": "vercel",
+    "name": "Vercel",
+    "kind": "hosting",
+    "packages": {
+      "npm": ["vercel", "@astrojs/vercel", "@sveltejs/adapter-vercel"]
+    },
+    "packagePrefixes": ["@vercel/"],
+    "envPrefixes": ["VERCEL_"],
+    "configFiles": ["vercel.json", ".vercel/project.json"],
+    "linkedIds": [
+      {
+        "kind": "project",
+        "file": ".vercel/project.json",
+        "field": "projectId",
+        "pattern": "^prj_[A-Za-z0-9]{8,64}$"
+      },
+      {
+        "kind": "org",
+        "file": ".vercel/project.json",
+        "field": "orgId",
+        "pattern": "^(?:team|org)_[A-Za-z0-9]{8,64}$"
+      }
+    ]
+  },
+  {
+    "id": "railway",
+    "name": "Railway",
+    "kind": "hosting",
+    "packages": {
+      "npm": ["@railway/cli"]
+    },
+    "envPrefixes": ["RAILWAY_"],
+    "configFiles": ["railway.json", "railway.toml"]
+  },
+  {
+    "id": "github",
+    "name": "GitHub",
+    "kind": "source",
+    "packages": {
+      "npm": ["@octokit/rest", "@octokit/core", "octokit"],
+      "pypi": ["PyGithub"]
+    },
+    "envPrefixes": ["GITHUB_APP_"]
+  },
+  {
+    "id": "healthchecks",
+    "name": "Healthchecks.io",
+    "kind": "monitoring",
+    "envPrefixes": ["HEALTHCHECKS_", "HC_PING_"],
+    "hosts": ["hc-ping.com", "healthchecks.io"]
+  },
+  {
+    "id": "supabase",
+    "name": "Supabase",
+    "kind": "database",
+    "packages": {
+      "npm": ["@supabase/supabase-js", "@supabase/ssr"],
+      "pypi": ["supabase"]
+    },
+    "packagePrefixes": ["@supabase/"],
+    "envPrefixes": ["SUPABASE_", "NEXT_PUBLIC_SUPABASE_", "VITE_SUPABASE_", "PUBLIC_SUPABASE_"],
+    "configFiles": ["supabase/config.toml"],
+    "linkedIds": [
+      {
+        "kind": "project",
+        "file": "supabase/.temp/project-ref",
+        "pattern": "^[a-z]{20}$"
+      }
+    ]
+  },
+  {
+    "id": "neon",
+    "name": "Neon",
+    "kind": "database",
+    "packages": {
+      "npm": ["@neondatabase/serverless"]
+    },
+    "envPrefixes": ["NEON_"],
+    "hosts": ["neon.tech"],
+    "linkedIds": [
+      {
+        "kind": "project",
+        "file": ".neon",
+        "field": "projectId",
+        "pattern": "^[a-z]+-[a-z]+-[a-z0-9]{6,8}$"
+      }
+    ]
+  },
+  {
+    "id": "postgres",
+    "name": "PostgreSQL",
+    "kind": "database",
+    "packages": {
+      "npm": ["pg", "postgres"],
+      "pypi": ["psycopg", "psycopg2", "psycopg2-binary", "asyncpg"]
+    },
+    "envNames": ["PGHOST", "PGPORT", "PGUSER", "PGPASSWORD", "PGDATABASE"],
+    "envPrefixes": ["POSTGRES_"],
+    "images": ["postgres", "postgis/postgis", "pgvector/pgvector"]
+  },
+  {
+    "id": "mysql",
+    "name": "MySQL",
+    "kind": "database",
+    "packages": {
+      "npm": ["mysql2", "mysql"],
+      "pypi": ["mysqlclient", "PyMySQL"]
+    },
+    "envPrefixes": ["MYSQL_"],
+    "images": ["mysql", "mariadb"]
+  },
+  {
+    "id": "mongodb",
+    "name": "MongoDB",
+    "kind": "database",
+    "packages": {
+      "npm": ["mongodb", "mongoose"],
+      "pypi": ["pymongo", "motor"]
+    },
+    "envNames": ["MONGODB_URI", "MONGO_URL"],
+    "envPrefixes": ["MONGODB_", "MONGO_"],
+    "images": ["mongo"]
+  },
+  {
+    "id": "redis",
+    "name": "Redis",
+    "kind": "cache",
+    "packages": {
+      "npm": ["redis", "ioredis"],
+      "pypi": ["redis"]
+    },
+    "envNames": ["REDIS_URL"],
+    "envPrefixes": ["REDIS_"],
+    "images": ["redis", "valkey/valkey"]
+  },
+  {
+    "id": "upstash",
+    "name": "Upstash",
+    "kind": "cache",
+    "packagePrefixes": ["@upstash/"],
+    "envPrefixes": ["UPSTASH_"]
+  },
+  {
+    "id": "rabbitmq",
+    "name": "RabbitMQ",
+    "kind": "queue",
+    "packages": {
+      "npm": ["amqplib"],
+      "pypi": ["pika"]
+    },
+    "envPrefixes": ["RABBITMQ_", "AMQP_"],
+    "images": ["rabbitmq"]
+  },
+  {
+    "id": "cloudflare",
+    "name": "Cloudflare",
+    "kind": "hosting",
+    "packages": {
+      "npm": [
+        "wrangler",
+        "@cloudflare/workers-types",
+        "@astrojs/cloudflare",
+        "@sveltejs/adapter-cloudflare",
+        "@sveltejs/adapter-cloudflare-workers"
+      ]
+    },
+    "packagePrefixes": ["@cloudflare/"],
+    "envPrefixes": ["CLOUDFLARE_", "CF_"],
+    "configFiles": ["wrangler.toml", "wrangler.jsonc", "wrangler.json"],
+    "linkedIds": [
+      {
+        "kind": "project",
+        "file": "wrangler.json",
+        "field": "name",
+        "pattern": "^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$"
+      }
+    ]
+  },
+  {
+    "id": "netlify",
+    "name": "Netlify",
+    "kind": "hosting",
+    "packages": {
+      "npm": ["netlify-cli", "@astrojs/netlify", "@sveltejs/adapter-netlify"]
+    },
+    "packagePrefixes": ["@netlify/"],
+    "envPrefixes": ["NETLIFY_"],
+    "configFiles": ["netlify.toml", ".netlify/state.json"],
+    "linkedIds": [
+      {
+        "kind": "project",
+        "file": ".netlify/state.json",
+        "field": "siteId",
+        "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+      }
+    ]
+  },
+  {
+    "id": "fly",
+    "name": "Fly.io",
+    "kind": "hosting",
+    "envPrefixes": ["FLY_"],
+    "configFiles": ["fly.toml"]
+  },
+  {
+    "id": "render",
+    "name": "Render",
+    "kind": "hosting",
+    "envPrefixes": ["RENDER_"],
+    "configFiles": ["render.yaml"]
+  },
+  {
+    "id": "heroku",
+    "name": "Heroku",
+    "kind": "hosting",
+    "envPrefixes": ["HEROKU_"],
+    "configFiles": ["app.json", "heroku.yml"]
+  },
+  {
+    "id": "aws",
+    "name": "Amazon Web Services",
+    "kind": "hosting",
+    "packages": {
+      "npm": ["aws-sdk"],
+      "pypi": ["boto3"]
+    },
+    "packagePrefixes": ["@aws-sdk/"],
+    "envNames": ["AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_REGION"]
+  },
+  {
+    "id": "stripe",
+    "name": "Stripe",
+    "kind": "payments",
+    "packages": {
+      "npm": ["stripe", "@stripe/stripe-js"],
+      "pypi": ["stripe"]
+    },
+    "packagePrefixes": ["@stripe/"],
+    "envPrefixes": ["STRIPE_", "NEXT_PUBLIC_STRIPE_"]
+  },
+  {
+    "id": "resend",
+    "name": "Resend",
+    "kind": "email",
+    "packages": {
+      "npm": ["resend"],
+      "pypi": ["resend"]
+    },
+    "envPrefixes": ["RESEND_"]
+  },
+  {
+    "id": "sendgrid",
+    "name": "SendGrid",
+    "kind": "email",
+    "packages": {
+      "pypi": ["sendgrid"]
+    },
+    "packagePrefixes": ["@sendgrid/"],
+    "envPrefixes": ["SENDGRID_"]
+  },
+  {
+    "id": "postmark",
+    "name": "Postmark",
+    "kind": "email",
+    "packages": {
+      "npm": ["postmark"],
+      "pypi": ["postmarker"]
+    },
+    "envPrefixes": ["POSTMARK_"]
+  },
+  {
+    "id": "twilio",
+    "name": "Twilio",
+    "kind": "other",
+    "packages": {
+      "npm": ["twilio"],
+      "pypi": ["twilio"]
+    },
+    "envPrefixes": ["TWILIO_"]
+  },
+  {
+    "id": "openai",
+    "name": "OpenAI",
+    "kind": "ai",
+    "packages": {
+      "npm": ["openai", "@ai-sdk/openai"],
+      "pypi": ["openai"]
+    },
+    "envNames": ["OPENAI_API_KEY"],
+    "envPrefixes": ["OPENAI_"],
+    "hosts": ["api.openai.com"]
+  },
+  {
+    "id": "anthropic",
+    "name": "Anthropic",
+    "kind": "ai",
+    "packages": {
+      "npm": ["@anthropic-ai/sdk", "@ai-sdk/anthropic"],
+      "pypi": ["anthropic"]
+    },
+    "envNames": ["ANTHROPIC_API_KEY"],
+    "envPrefixes": ["ANTHROPIC_"],
+    "hosts": ["api.anthropic.com"]
+  },
+  {
+    "id": "e2b",
+    "name": "E2B",
+    "kind": "hosting",
+    "packages": {
+      "npm": ["e2b"],
+      "pypi": ["e2b", "e2b-code-interpreter", "e2b-desktop"]
+    },
+    "packagePrefixes": ["@e2b/"],
+    "envNames": ["E2B_API_KEY"],
+    "envPrefixes": ["E2B_"],
+    "configFiles": ["e2b.toml", "e2b.Dockerfile"],
+    "hosts": ["api.e2b.app", "api.e2b.dev"]
+  },
+  {
+    "id": "elevenlabs",
+    "name": "ElevenLabs",
+    "kind": "ai",
+    "packages": {
+      "npm": ["elevenlabs", "@ai-sdk/elevenlabs"],
+      "pypi": ["elevenlabs", "livekit-plugins-elevenlabs"]
+    },
+    "packagePrefixes": ["@elevenlabs/"],
+    "envNames": ["ELEVENLABS_API_KEY", "ELEVEN_API_KEY"],
+    "envPrefixes": ["ELEVENLABS_"],
+    "hosts": [
+      "api.elevenlabs.io",
+      "api.us.elevenlabs.io",
+      "api.eu.residency.elevenlabs.io",
+      "api.in.residency.elevenlabs.io",
+      "api.sg.residency.elevenlabs.io"
+    ]
+  },
+  {
+    "id": "airtable",
+    "name": "Airtable",
+    "kind": "database",
+    "packages": {
+      "npm": ["airtable"],
+      "pypi": ["pyairtable"]
+    },
+    "envPrefixes": ["AIRTABLE_"],
+    "hosts": ["api.airtable.com"]
+  },
+  {
+    "id": "clerk",
+    "name": "Clerk",
+    "kind": "auth",
+    "packagePrefixes": ["@clerk/"],
+    "envPrefixes": ["CLERK_", "NEXT_PUBLIC_CLERK_"]
+  },
+  {
+    "id": "auth0",
+    "name": "Auth0",
+    "kind": "auth",
+    "packagePrefixes": ["@auth0/"],
+    "envPrefixes": ["AUTH0_"]
+  },
+  {
+    "id": "firebase",
+    "name": "Firebase",
+    "kind": "database",
+    "packages": {
+      "npm": ["firebase", "firebase-admin"],
+      "pypi": ["firebase-admin"]
+    },
+    "envPrefixes": ["FIREBASE_", "NEXT_PUBLIC_FIREBASE_"],
+    "configFiles": ["firebase.json", ".firebaserc"]
+  },
+  {
+    "id": "sentry",
+    "name": "Sentry",
+    "kind": "monitoring",
+    "packages": {
+      "pypi": ["sentry-sdk"]
+    },
+    "packagePrefixes": ["@sentry/"],
+    "envPrefixes": ["SENTRY_", "NEXT_PUBLIC_SENTRY_"],
+    "configFiles": ["sentry.properties", ".sentryclirc"]
+  },
+  {
+    "id": "posthog",
+    "name": "PostHog",
+    "kind": "analytics",
+    "packages": {
+      "npm": ["posthog-js", "posthog-node"],
+      "pypi": ["posthog"]
+    },
+    "envPrefixes": ["POSTHOG_", "NEXT_PUBLIC_POSTHOG_"]
+  },
+  {
+    "id": "algolia",
+    "name": "Algolia",
+    "kind": "other",
+    "packages": {
+      "npm": ["algoliasearch"],
+      "pypi": ["algoliasearch"]
+    },
+    "envPrefixes": ["ALGOLIA_", "NEXT_PUBLIC_ALGOLIA_"]
+  },
+  {
+    "id": "cloudinary",
+    "name": "Cloudinary",
+    "kind": "storage",
+    "packages": {
+      "npm": ["cloudinary", "next-cloudinary"],
+      "pypi": ["cloudinary"]
+    },
+    "envPrefixes": ["CLOUDINARY_"]
+  },
+  {
+    "id": "inngest",
+    "name": "Inngest",
+    "kind": "queue",
+    "packages": {
+      "npm": ["inngest"],
+      "pypi": ["inngest"]
+    },
+    "envPrefixes": ["INNGEST_"]
+  }
+]

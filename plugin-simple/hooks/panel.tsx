@@ -1,31 +1,36 @@
 import type { EngineInterface, Register, RenderChildren } from 'claude-code';
 
-// The Stackwarden panel beside the chat (ADR 0076 to 0078): the dashboard, as the panel draws it.
-// It opens on the project of the repo the session is in, with its service cards; "Dashboard" leads
-// to Home, with Projects, Services and the tasks; a card opens its service's detail, with every
-// project that uses it. Stackwarden works the view out with the dashboard's own code; the panel only
-// draws what `sw.mjs panel` keeps on this computer, and acts only through `sw.mjs`.
+// The Stackwarden panel beside the chat (ADR 0076 to 0078, 0081): the dashboard, as the panel draws
+// it. It opens on the repo's project, with its service cards; "Dashboard" leads to Home, with the
+// projects, services and tasks; a card opens its service's detail, with every project that uses it.
+// Stackwarden works the view out with the dashboard's own code; the panel only draws what
+// `sw.mjs panel` keeps on this computer, and acts only through `sw.mjs`.
 //
-// It draws with what every surface has (Box, Text, Button, Link), as a web app does on the desktop:
-// native buttons, a type scale, rounded boxes whose border lights on hover, and project tags in
-// their colours; Svg only where a surface draws it. Colours are theme keys or hex.
+// One design for every surface, with what each has (Box, Text, Button, Link); Svg only where a
+// surface draws it. Colours are theme keys or hex.
 
 const PANE = 'stackwarden';
 const COMMAND = 'stackwarden';
 const VIEW_EVERY_MS = 10 * 60_000;
+// The reading the session-start hook runs in the background lands within a minute or so. Until then
+// the panel looks every few seconds at when its own two state files last changed, and draws again
+// once they do: a look at a file's time, no program run.
+const WATCH_EVERY_MS = 3_000;
+const WATCH_FOR_MS = 3 * 60_000;
+const STATE_FILES = ['reader-state.json', 'panel-summary.json'];
 const FIELDS_KEY = 'fields-v3';
 /** Kept once the person says "Not now" to auto-update, so Home stops offering it. */
 const AUTO_UPDATE_DECLINED = 'auto-update-declined';
 const LONG_MS = 10 * 60_000;
 const SHORT_MS = 30_000;
 const DAY_MS = 24 * 60 * 60_000;
-/** The oldest Node.js the plugin's scripts run on: their bundles' target in scripts/build-plugin.ts. */
+/** The oldest Node.js the plugin's scripts are written for, as the README says. */
 const NODE_MIN = 22;
 const NODE_DOWNLOAD = 'https://nodejs.org/en/download';
 /** The task kind for services waiting for an OK: the panel shows those in their project, not on Home. */
 const APPROVALS = 'suggestions-waiting';
 
-// What `sw.mjs panel` prints: see packages/reader/src/simple.ts and core's ReaderView.
+// What `sw.mjs panel` prints: see scripts/panel-data.mjs and core's ReaderView.
 type Tone = 'ok' | 'warn' | 'crit' | 'neutral';
 type CardValue =
   | { type: 'text'; text: string; mono: boolean }
@@ -72,10 +77,8 @@ interface ViewProvider {
   title: string;
   summary: string;
   monthly: string;
-  trial: string | null;
   accounts: { name: string; owner: string; monthly: string; plan: string | null; reads: string }[];
   projects: { id: string; name: string; color: Color }[];
-  unassigned: number;
 }
 interface View {
   organization: { id: string; name: string };
@@ -89,7 +92,6 @@ interface View {
     title: string;
     summary: string;
     due: string | null;
-    provider: string | null;
     project: { id: string; name: string } | null;
     url: string;
   }[];
@@ -115,7 +117,12 @@ interface PanelData {
   status: { state: string; action: Action; text: string; readAt: string | null };
   organization: string | null;
   repo: { name: string; remote: string | null; filed: { project: { name: string; url: string } } | null };
-  team: { account: { id: string }; tokens: Token[] | null; projects: { id: string; keys: string[] }[] } | null;
+  team: {
+    account: { id: string };
+    tokens: Token[] | null;
+    /** Each Vercel project: whether it is this repo's, and the Stackwarden project it's in, if any. */
+    projects: { id: string; name: string; keys: string[]; thisRepo: boolean; stackwarden: { name: string } | null }[];
+  } | null;
   view: View | null;
   /** Whether new versions arrive by themselves; null where the plugin isn't from its marketplace. */
   plugin?: { autoUpdate: boolean | null };
@@ -143,13 +150,14 @@ const ACTION_LABELS: Record<Action, string> = {
 };
 
 /** What the panel asks `sw.mjs` to do besides the status's one action. */
-type Errand = 'keys' | 'inbox' | 'autoupdate' | 'update';
+type Errand = 'keys' | 'inbox' | 'autoupdate' | 'update' | 'link';
 
 const BUSY: Record<Action | Errand, string> = {
-  refresh: 'Reading Vercel…',
-  sign_in: 'Approve the sign-in in your browser, at Vercel…',
-  connect: 'Approve this computer in your browser, at Stackwarden…',
-  set_up: 'Setting up the Vercel CLI, about two minutes…',
+  refresh: 'Reading Vercel through your Vercel CLI…',
+  sign_in: 'Approve the Vercel CLI sign-in in your browser, at Vercel…',
+  connect: 'Connect this computer to Stackwarden in your browser…',
+  set_up: 'Checking the Vercel CLI…',
+  link: 'Matching the repo to its Vercel project…',
   keys: 'Saving the keys…',
   inbox: 'Answering…',
   autoupdate: 'Turning on auto-update…',
@@ -203,6 +211,8 @@ let ownVersion: string | null = null;
 let autoUpdateDeclined = false;
 /** Why the scripts can't run, when the last read got no answer; null when they can. */
 let nodeProblem: string | null = null;
+/** When the state files had last changed as the panel last read them. */
+let drawnAt = 0;
 
 const isObject = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null;
 
@@ -264,7 +274,34 @@ function repoProject(panel: PanelData): ViewProject | null {
   );
 }
 
+/** When the plugin's state files last changed, or 0 when there are none to look at. */
+async function changedAt($: EngineInterface): Promise<number> {
+  const folder = (await $.process.hookEnv()).CLAUDE_PLUGIN_DATA;
+  if (!folder) return 0;
+  const times = await Promise.all(
+    STATE_FILES.map((name) =>
+      $.fs.stat(`${folder}/${name}`).then(
+        (file) => file.mtimeMs,
+        () => 0,
+      ),
+    ),
+  );
+  return Math.max(0, ...times);
+}
+
+/** Draws again whenever the state files change, for `WATCH_FOR_MS`. */
+function watchForReading($: EngineInterface): void {
+  let ticks = Math.ceil(WATCH_FOR_MS / WATCH_EVERY_MS);
+  const timer = $.clock.every(WATCH_EVERY_MS, () => {
+    ticks -= 1;
+    if (ticks <= 0) timer.cancel();
+    void changedAt($).then((at) => (at > drawnAt ? reload($) : undefined));
+  });
+}
+
 async function reload($: EngineInterface): Promise<void> {
+  // What changes after this is new to the panel, and the watch draws it.
+  drawnAt = await changedAt($);
   data = asPanel(await sw($, ['panel', await $.session.cwd()], SHORT_MS));
   // No answer: say whether Node.js is the reason, rather than read on for ever.
   nodeProblem = data ? null : await nodeCheck($);
@@ -302,7 +339,7 @@ async function act($: EngineInterface, action: Action | Errand, args: string[] =
     const answer =
       action === 'refresh'
         ? asAnswer(await sw($, ['read', await $.session.cwd()], LONG_MS))
-        : action === 'keys' || action === 'inbox' || action === 'autoupdate' || action === 'update'
+        : action === 'keys' || action === 'inbox' || action === 'autoupdate' || action === 'update' || action === 'link'
           ? asAnswer(await sw($, [action, ...args], action === 'update' ? LONG_MS : SHORT_MS))
           : action === 'sign_in'
             ? await untilDone($, 'login', 'login_wait')
@@ -317,6 +354,16 @@ async function act($: EngineInterface, action: Action | Errand, args: string[] =
     busy = null;
     await reload($);
   }
+}
+
+/**
+ * Whether a shell command ran this plugin's script for a step that can change what the panel shows:
+ * any but `panel` and `hook`, which only read. The step is the word after the data folder.
+ */
+function rereadAfter<T>($: EngineInterface, command: string, ran: T): T {
+  const step = /scripts[\\/]sw\.mjs"?\s+--data\s+(?:"[^"]*"|\S+)\s+(\S+)/.exec(command)?.[1];
+  if (step !== undefined && step !== 'panel' && step !== 'hook') void reload($);
+  return ran;
 }
 
 function redraw($: EngineInterface, change: () => void): void {
@@ -469,6 +516,7 @@ export const register: Register = (on) => {
     await $.command.register({ name: COMMAND, description: 'Open the Stackwarden panel' });
     void $.ui.open({ id: PANE, title: 'Stackwarden' });
     void reload($).then(() => refreshView($));
+    watchForReading($);
     $.clock.every(VIEW_EVERY_MS, () => {
       void refreshView($);
     });
@@ -479,6 +527,17 @@ export const register: Register = (on) => {
     await $.ui.open({ id: PANE, title: 'Stackwarden' });
     return { text: 'Stackwarden panel opened.' };
   }).catch(($, e, next) => (next.called ? next(e) : { text: 'The Stackwarden panel could not open.' }));
+
+  // Each step the setup takes in the chat runs the plugin's script: once it has, the panel shows
+  // what changed, rather than what it last read (round 1, finding 10).
+  // The script keeps what Stackwarden answered, so reading this computer's files is enough. A failure
+  // here never holds the command up.
+  on('tool.call', { tool: 'Bash' }, async ($, e, next) => rereadAfter($, e.command, await next(e))).catch(
+    ($, e, next) => next(e),
+  );
+  on('tool.call', { tool: 'PowerShell' }, async ($, e, next) => rereadAfter($, e.command, await next(e))).catch(
+    ($, e, next) => next(e),
+  );
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const { Box, Text, Button, Link, Input } = $.ui.resolve(e);
@@ -510,23 +569,18 @@ export const register: Register = (on) => {
       </Text>
     );
 
-    /** A project's colour as a dot, beside its name in the text's own colour. */
-    const dot = (key: string, color: Color) => (
-      <Text key={key} color={PROJECT_COLORS[color]}>
-        ●
-      </Text>
-    );
     /**
      * A button as text, with no fill and no border, to keep the panel light. A desktop's border takes
      * a line above and below what it holds, so an outline doubled a button's height. The main action
-     * of a place is the one filled button. The terminal draws its own `[ label ]`.
+     * of a place is the one filled button. One design for every surface (ADR 0081): each draws a plain
+     * button its own way.
      */
     const textButton = (key: string, label: string, onPress: () => void, main = false) => (
       <Button
         key={key}
         label={label}
         onPress={onPress}
-        {...(main ? { variant: 'primary' as const } : e.surface === 'terminal' ? {} : { plain: true as const })}
+        {...(main ? { variant: 'primary' as const } : { plain: true as const })}
       />
     );
 
@@ -559,38 +613,11 @@ export const register: Register = (on) => {
       );
     };
 
-    /** A box holding the named thing on top and plain text under it, laid out as a column. */
-    const stack = (children: RenderChildren) => (
-      <Box flexDirection="column" alignItems="flex-start" gap="xs" flexGrow={1} flexShrink={1}>
-        {children}
-      </Box>
-    );
-
-    /**
-     * One row in a rounded box of its own that is not pressed itself, such as an account or a service
-     * with its own buttons: no hover, so only what can be pressed answers the pointer.
-     */
-    const row = (key: string, left: RenderChildren, right: RenderChildren = null) => (
-      <Box
-        key={key}
-        flexDirection="row"
-        alignItems="center"
-        justifyContent="space-between"
-        gap={1}
-        borderStyle="round"
-        borderColor="subtle"
-        paddingX={1}
-      >
-        <Box flexDirection="row" alignItems="center" gap={1} flexGrow={1} flexShrink={1}>
-          {left}
-        </Box>
-        {right ? (
-          <Box flexDirection="row" alignItems="center" gap={1} flexShrink={0}>
-            {right}
-          </Box>
-        ) : null}
-      </Box>
-    );
+    /** A cost a month, or nothing where none is known: never "$0.00/mo" for a service no bill names. */
+    const perMonth = (monthly: string, size?: 'heading') =>
+      /^\$?0(?:\.0+)?$/.test(monthly.trim()) ? null : (
+        <Text tabular {...(size ? { size } : {})}>{`${monthly}/mo`}</Text>
+      );
 
     // Every view starts with which plugin runs, so the person sees it at a glance, as after an update:
     // a local build in the warning colour with its checkout, the marketplace's copy dim.
@@ -678,64 +705,79 @@ export const register: Register = (on) => {
       autoUpdate !== null && latest !== null && ownVersion !== null && isNewer(latest, ownVersion) ? latest : null;
     const turnOnAutoUpdate = () =>
       textButton('auto-update-on', 'Turn on auto-update', () => act($, 'autoupdate', ['on']));
-    const updateNotice = newer ? (
+    /**
+     * A rounded box that is not pressed itself, such as a notice or an account: what it says on the
+     * left, and what it offers on the right. No hover, so only what can be pressed answers the pointer.
+     */
+    const boxed = (key: string, border: 'suggestion' | 'subtle', left: RenderChildren, right: RenderChildren) => (
       <Box
+        key={key}
         flexDirection="row"
         alignItems="center"
         justifyContent="space-between"
         gap={1}
         flexWrap="wrap"
         borderStyle="round"
-        borderColor="suggestion"
+        borderColor={border}
+        borderDimColor={border === 'subtle'}
         paddingX={1}
         paddingY="xs"
       >
         <Box flexDirection="column" flexShrink={1}>
-          <Text weight="semibold">Stackwarden {newer} is out</Text>
-          {meta(
-            `You have ${ownVersion ?? 'an older one'}.${autoUpdate === false ? ' With auto-update on, new versions arrive by themselves.' : ''}`,
-          )}
+          {left}
         </Box>
-        {busy ? null : (
+        {right ? (
           <Box flexDirection="row" gap={1} alignItems="center">
-            {textButton('plugin-update', 'Update now', () => act($, 'update'), true)}
-            {autoUpdate === false ? turnOnAutoUpdate() : null}
+            {right}
           </Box>
-        )}
+        ) : null}
       </Box>
-    ) : null;
+    );
+    // Buttons wait while a step runs.
+    const updateNotice = newer
+      ? boxed(
+          'update',
+          'suggestion',
+          [
+            <Text key="out" weight="semibold">
+              Stackwarden {newer} is out
+            </Text>,
+            meta(
+              `You have ${ownVersion ?? 'an older one'}.${autoUpdate === false ? ' With auto-update on, new versions arrive by themselves.' : ''}`,
+            ),
+          ],
+          busy
+            ? null
+            : [
+                textButton('plugin-update', 'Update now', () => act($, 'update'), true),
+                autoUpdate === false ? turnOnAutoUpdate() : null,
+              ],
+        )
+      : null;
     // Home offers auto-update once, while new versions don't arrive by themselves; "Not now" is kept.
     const autoUpdateOffer =
-      !newer && autoUpdate === false && !autoUpdateDeclined ? (
-        <Box
-          flexDirection="row"
-          alignItems="center"
-          justifyContent="space-between"
-          gap={1}
-          flexWrap="wrap"
-          borderStyle="round"
-          borderColor="subtle"
-          paddingX={1}
-          paddingY="xs"
-        >
-          <Box flexShrink={1}>{meta('New versions of Stackwarden arrive by themselves only with auto-update on.')}</Box>
-          {busy ? null : (
-            <Box flexDirection="row" gap={1} alignItems="center">
-              {turnOnAutoUpdate()}
-              {textButton('auto-update-later', 'Not now', () =>
-                redraw($, () => {
-                  autoUpdateDeclined = true;
-                  void $.store.set(AUTO_UPDATE_DECLINED, true);
-                }),
-              )}
-            </Box>
-          )}
-        </Box>
-      ) : null;
+      !newer && autoUpdate === false && !autoUpdateDeclined
+        ? boxed(
+            'auto-update',
+            'subtle',
+            meta('New versions of Stackwarden arrive by themselves only with auto-update on.'),
+            busy
+              ? null
+              : [
+                  turnOnAutoUpdate(),
+                  textButton('auto-update-later', 'Not now', () =>
+                    redraw($, () => {
+                      autoUpdateDeclined = true;
+                      void $.store.set(AUTO_UPDATE_DECLINED, true);
+                    }),
+                  ),
+                ],
+          )
+        : null;
 
     // The top of every view: the navigation, then a newer version when there is one.
     const bar = (
-      <Box flexDirection="column" gap="lg">
+      <Box flexDirection="column" gap="xl">
         {navigation}
         {updateNotice}
       </Box>
@@ -743,7 +785,7 @@ export const register: Register = (on) => {
 
     if (!view) {
       return frame(
-        <Box flexDirection="column" gap="lg">
+        <Box flexDirection="column" gap="xl">
           {status}
           {notes}
           {panel.status.state === 'not_connected' ? null : meta('Loading Stackwarden…')}
@@ -890,6 +932,7 @@ export const register: Register = (on) => {
           gap="sm"
           borderStyle="round"
           borderColor={options.marked ? 'claude' : 'subtle'}
+          borderDimColor={!options.marked}
           paddingX={1}
           paddingY="xs"
         >
@@ -897,21 +940,21 @@ export const register: Register = (on) => {
           {options.head ?? (
             <Box flexDirection="row" gap={1} alignItems="center">
               {markOf(card.provider, card.title)}
-              {stack([
-                meta(card.kind),
-                opens ? (
+              <Box flexDirection="column" alignItems="flex-start" gap="xs" flexGrow={1} flexShrink={1}>
+                {meta(card.kind)}
+                {opens ? (
                   named(`open-${card.serviceId}`, opens, card.title)
                 ) : (
-                  <Text key="title" size="heading" weight="semibold">
+                  <Text size="heading" weight="semibold">
                     {card.title}
                   </Text>
-                ),
-                card.subtitle ? (
-                  <Text key="subtitle" size="footnote" mono dimColor>
+                )}
+                {card.subtitle ? (
+                  <Text size="footnote" mono dimColor>
                     {card.subtitle}
                   </Text>
-                ) : null,
-              ])}
+                ) : null}
+              </Box>
             </Box>
           )}
           {shown.length === 0
@@ -998,6 +1041,7 @@ export const register: Register = (on) => {
           gap={1}
           borderStyle="round"
           borderColor={severity.color}
+          borderDimColor
           paddingX={1}
           paddingY="xs"
         >
@@ -1067,11 +1111,12 @@ export const register: Register = (on) => {
         <Box
           key={key}
           flexDirection="column"
-          gap="xs"
+          gap="sm"
           borderStyle="round"
           borderColor="subtle"
+          borderDimColor
           paddingX={1}
-          paddingY="xs"
+          paddingY="sm"
         >
           {heading(first, right)}
           {second}
@@ -1079,7 +1124,7 @@ export const register: Register = (on) => {
       );
       // The names a row links to, quiet on the line under its title, with room between them.
       const links = (children: RenderChildren) => (
-        <Box flexDirection="row" flexWrap="wrap" alignItems="center" gap="md">
+        <Box flexDirection="row" flexWrap="wrap" alignItems="center" gap="lg">
           {children}
         </Box>
       );
@@ -1127,7 +1172,7 @@ export const register: Register = (on) => {
               provider.title,
             ),
           ],
-          <Text tabular>{provider.monthly}/mo</Text>,
+          perMonth(provider.monthly),
           provider.projects.length === 0
             ? meta('In no project')
             : links(
@@ -1142,7 +1187,7 @@ export const register: Register = (on) => {
               ),
         );
       return frame(
-        <Box flexDirection="column" gap="lg">
+        <Box flexDirection="column" gap="xl">
           {bar}
           {status}
           {notes}
@@ -1153,22 +1198,22 @@ export const register: Register = (on) => {
             )}
           </Box>
           {autoUpdateOffer}
-          <Box flexDirection="column" gap="sm">
+          <Box flexDirection="column" gap="md">
             {section('Projects')}
             {view.projects.length === 0 ? meta('No projects yet.') : null}
             {buckets.map((bucket) => (
-              <Box key={bucket ?? 'all'} flexDirection="column" gap="sm">
+              <Box key={bucket ?? 'all'} flexDirection="column" gap="md">
                 {bucket ? <Text weight="semibold">{bucket}</Text> : null}
                 {view.projects.filter((project) => project.bucket === bucket).map(projectLines)}
               </Box>
             ))}
           </Box>
-          <Box flexDirection="column" gap="sm">
+          <Box flexDirection="column" gap="md">
             {heading(section('Tasks'), <Link href={view.links.home} label="On the dashboard ↗" />)}
             {tasks.length === 0 ? meta('Nothing needs you now.') : null}
             {tasks.map((task) => taskRow(task, true))}
           </Box>
-          <Box flexDirection="column" gap="sm">
+          <Box flexDirection="column" gap="md">
             {heading(section('Services'), <Link href={view.links.services} label="On the dashboard ↗" />)}
             {view.providers.length === 0 ? (
               meta('No services yet.')
@@ -1207,29 +1252,28 @@ export const register: Register = (on) => {
       const types = [...new Set(uses.map(({ card }) => card.type))];
       const name = provider?.title ?? uses[0]?.card.title ?? current.provider;
       return frame(
-        <Box flexDirection="column" gap="lg">
+        <Box flexDirection="column" gap="xl">
           {bar}
           {notes}
           {heading(
             [<Box key="mark">{markOf(current.provider, name)}</Box>, <Box key="title">{title(name)}</Box>],
-            provider ? (
-              <Text size="heading" tabular>
-                {provider.monthly}/mo
-              </Text>
-            ) : null,
+            provider ? perMonth(provider.monthly, 'heading') : null,
           )}
           {provider ? meta(provider.summary) : null}
           {provider && provider.accounts.length > 0 ? (
             <Box flexDirection="column" gap="xs">
               {section('Accounts')}
               {provider.accounts.map((account) =>
-                row(
+                boxed(
                   `account-${account.name}-${account.owner}`,
-                  <Box flexDirection="column">
-                    <Text weight="semibold">{account.name}</Text>
-                    {meta(`${account.owner} · ${account.reads}${account.plan ? ` · ${account.plan}` : ''}`)}
-                  </Box>,
-                  <Text tabular>{account.monthly}/mo</Text>,
+                  'subtle',
+                  [
+                    <Text key="name" weight="semibold">
+                      {account.name}
+                    </Text>,
+                    meta(`${account.owner} · ${account.reads}${account.plan ? ` · ${account.plan}` : ''}`),
+                  ],
+                  perMonth(account.monthly),
                 ),
               )}
             </Box>
@@ -1270,11 +1314,40 @@ export const register: Register = (on) => {
       );
     }
 
+    /**
+     * This repo's Vercel project: named when it is matched, else a pick from the team's projects in
+     * no Stackwarden project yet, which links it (round 1, finding 11).
+     */
+    const vercelMatch = () => {
+      const team = panel.team;
+      if (!team) return null;
+      const matched = team.projects.filter((each) => each.thisRepo);
+      if (matched.length > 0) {
+        return meta(`Matched to your Vercel project ${matched.map((each) => each.name).join(', ')}.`);
+      }
+      const link = (id: string) => () => {
+        void (async () => {
+          await act($, 'link', [id, await $.session.cwd()]);
+        })();
+      };
+      const free = team.projects.filter((each) => each.stackwarden === null);
+      return (
+        <Box flexDirection="column" gap="sm">
+          {section('Vercel')}
+          {meta('No Vercel project is matched to this repo yet. Which one is it?')}
+          <Box flexDirection="row" flexWrap="wrap" alignItems="center" gap="lg">
+            {free.map((each) => textButton(`pick-${each.id}`, each.name, link(each.id)))}
+            {textButton('pick-none', 'None of these', link('none'))}
+          </Box>
+        </Box>
+      );
+    };
+
     // A project: its tasks, each waiting service one of them, then its service cards.
     const project = view.projects.find((each) => each.id === current.id);
     if (!project) {
       return frame(
-        <Box flexDirection="column" gap="lg">
+        <Box flexDirection="column" gap="xl">
           {bar}
           {meta(`That project is no longer in ${view.organization.name}.`)}
         </Box>,
@@ -1289,14 +1362,16 @@ export const register: Register = (on) => {
     const urgent = tasks.filter((task) => task.severity !== 'info');
     const later = tasks.filter((task) => task.severity === 'info');
     return frame(
-      <Box flexDirection="column" gap="lg">
+      <Box flexDirection="column" gap="xl">
         {bar}
         {status}
         {notes}
         <Box flexDirection="column" gap="xs">
           {heading(
             [
-              dot('project-dot', project.color),
+              <Text key="dot" color={PROJECT_COLORS[project.color]}>
+                ●
+              </Text>,
               <Box key="title">{title(project.name)}</Box>,
               <Text key="status" size="caption" weight="semibold" inverse>
                 {` ${project.status} `}
@@ -1308,8 +1383,9 @@ export const register: Register = (on) => {
             `${project.clientName ? `Client: ${project.clientName}` : 'Own project'}${project.repo ? ` · ${project.repo}` : ''}${isRepo ? ' · this repo' : ''}`,
           )}
         </Box>
+        {isRepo ? vercelMatch() : null}
         {tasks.length + waiting.length > 0 ? (
-          <Box flexDirection="column" gap="sm">
+          <Box flexDirection="column" gap="md">
             {section('Tasks')}
             {urgent.map((task) => taskRow(task, false))}
             {waiting.map(approvalRow)}
@@ -1319,7 +1395,7 @@ export const register: Register = (on) => {
         {heading(section(plural(project.cards.length, 'service')), fieldsButton('project'))}
         {picker('project', cardGroups('project', types))}
         {project.cards.length === 0 ? meta('No services yet.') : null}
-        <Box flexDirection="column" gap="lg">
+        <Box flexDirection="column" gap="xl">
           {project.cards.map((card) =>
             serviceCard(card, fieldsFor(view, 'project', card.type), () =>
               go($, { kind: 'service', provider: card.provider, from: project.id }),
